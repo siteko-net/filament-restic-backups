@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Siteko\FilamentResticBackups\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 
 class BackupSetting extends Model
 {
@@ -14,6 +15,7 @@ class BackupSetting extends Model
         'endpoint',
         'bucket',
         'prefix',
+        'repository_prefix',
         'access_key',
         'secret_key',
         'restic_repository',
@@ -52,6 +54,35 @@ class BackupSetting extends Model
         return static::query()->create(static::defaultAttributes());
     }
 
+    public function resolveRepositoryPrefix(): string
+    {
+        $prefix = $this->repository_prefix ?: $this->prefix;
+
+        if (is_string($prefix) && trim($prefix) !== '') {
+            return trim($prefix, '/');
+        }
+
+        return static::computeRepositoryPrefix();
+    }
+
+    public static function computeRepositoryPrefix(): string
+    {
+        $appSlug = Str::slug((string) config('app.name', ''));
+
+        if ($appSlug === '') {
+            $appSlug = Str::slug((string) basename(base_path()));
+        }
+
+        if ($appSlug === '') {
+            $appSlug = 'project-' . substr(sha1(base_path()), 0, 8);
+        }
+
+        $env = trim((string) config('app.env', 'production'));
+        $env = $env === '' ? 'production' : $env;
+
+        return 'restic/' . $appSlug . '/' . $env;
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -69,9 +100,19 @@ class BackupSetting extends Model
             ],
             'paths' => [
                 'include' => [],
-                'exclude' => [],
+                'exclude' => [
+                    'vendor',
+                    'node_modules',
+                    '.git',
+                    'storage/framework',
+                    'storage/logs',
+                    'bootstrap/cache',
+                    'public/build',
+                    'public/hot',
+                ],
             ],
             'project_root' => config('restic-backups.paths.project_root', base_path()),
+            'repository_prefix' => static::computeRepositoryPrefix(),
         ];
     }
 }

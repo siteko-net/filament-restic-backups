@@ -165,6 +165,37 @@ class ResticRunner
         return $this->run($command, options: $options, expectsJson: $expectsJson);
     }
 
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    public function dump(string $snapshotId, string $filePath, string $targetPath, array $options = []): ProcessResult
+    {
+        $snapshotId = trim($snapshotId);
+        $filePath = trim($filePath);
+
+        if ($snapshotId === '') {
+            throw new ResticConfigurationException(['snapshot_id'], 'Snapshot ID is required for dump.');
+        }
+
+        if ($filePath === '') {
+            throw new ResticConfigurationException(['file_path'], 'File path is required for dump.');
+        }
+
+        $this->ensureDirectory(dirname($targetPath), mustBeWritable: true, context: 'target_path');
+
+        $command = ['dump', $snapshotId, $filePath, '--target', $targetPath];
+
+        return $this->run($command, options: $options);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    public function init(array $options = []): ProcessResult
+    {
+        return $this->run(['init'], options: $options);
+    }
+
     public function version(): ProcessResult
     {
         return $this->run(['version'], requiresRepository: false);
@@ -326,7 +357,7 @@ class ResticRunner
             return null;
         }
 
-        $prefix = $this->normalizeScalar($settings->prefix);
+        $prefix = $this->normalizeScalar($settings->repository_prefix ?? $settings->prefix);
         $endpoint = rtrim($endpoint, '/');
         $bucket = trim($bucket, '/');
 

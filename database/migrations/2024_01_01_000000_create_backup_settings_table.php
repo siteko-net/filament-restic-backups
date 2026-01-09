@@ -13,6 +13,7 @@ return new class extends Migration
             $table->string('endpoint')->nullable();
             $table->string('bucket')->nullable();
             $table->string('prefix')->nullable();
+            $table->string('repository_prefix')->nullable();
             $table->text('access_key')->nullable();
             $table->text('secret_key')->nullable();
             $table->text('restic_repository')->nullable();

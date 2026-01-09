@@ -534,6 +534,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 ->schema([
                     Radio::make('scope')
                         ->label('Restore scope')
+                        ->helperText('DB-only extracts only the database dump; project files are not restored.')
                         ->options([
                             'files' => 'Files only',
                             'db' => 'Database only',

@@ -79,6 +79,7 @@ class RunRestoreJob implements ShouldQueue
         $safetyDumpPath = null;
         $cleanupPaths = [];
         $connectionName = null;
+        $dbSnapshotDumpPath = null;
 
         try {
             $settings = BackupSetting::singleton();
@@ -159,6 +160,119 @@ class RunRestoreJob implements ShouldQueue
 
             if (! ($spaceMeta['ok'] ?? false)) {
                 throw new \RuntimeException('Insufficient disk space for restore.');
+            }
+
+            if ($scope === 'db') {
+                $step = 'dump_db_from_snapshot';
+                $dumpMeta = $this->fetchDatabaseDumpFromSnapshot($runner, $snapshotInfo, $projectRoot, $run->id ?? null);
+                $meta['steps']['dump_db_from_snapshot'] = $dumpMeta;
+                $meta['restore'] = array_merge($meta['restore'] ?? [], [
+                    'db_restore_method' => $dumpMeta['method'] ?? null,
+                    'db_dump_path' => $dumpMeta['dump_path'] ?? null,
+                    'snapshot_dump_path' => $dumpMeta['snapshot_path'] ?? null,
+                ]);
+                $run->update(['meta' => $meta]);
+
+                if (isset($dumpMeta['cleanup_paths']) && is_array($dumpMeta['cleanup_paths'])) {
+                    $cleanupPaths = array_merge($cleanupPaths, $dumpMeta['cleanup_paths']);
+                }
+
+                if (($dumpMeta['exit_code'] ?? 1) !== 0) {
+                    throw new \RuntimeException('Database dump file not found in snapshot.');
+                }
+
+                $dbSnapshotDumpPath = $this->normalizeScalar($dumpMeta['dump_path'] ?? null);
+
+                if ($dbSnapshotDumpPath === null || ! is_file($dbSnapshotDumpPath)) {
+                    throw new \RuntimeException('Database dump file was not available after extraction.');
+                }
+
+                if ($this->safetyBackup) {
+                    $step = 'safety_backup';
+                    $safetyMeta = $this->runSafetyBackup($runner, $settings, $projectRoot, $connectionName, $snapshotInfo, (int) $run->id);
+                    $meta['steps']['safety_backup'] = $safetyMeta;
+                    $run->update(['meta' => $meta]);
+
+                    if (($safetyMeta['exit_code'] ?? 1) === 0) {
+                        $candidate = storage_path('app/_backup/db.sql.gz');
+
+                        if (is_file($candidate)) {
+                            $safetyDumpPath = $candidate;
+                            $meta['restore']['safety_dump_path'] = $candidate;
+                            $run->update(['meta' => $meta]);
+                        }
+                    } else {
+                        throw new \RuntimeException('Safety backup failed.');
+                    }
+                }
+
+                $step = 'cutover_down';
+                $downSecret = $this->generateDownSecret();
+                $meta['restore'] = array_merge($meta['restore'] ?? [], [
+                    'secret' => $downSecret,
+                    'bypass_path' => '/' . $downSecret,
+                ]);
+                $run->update(['meta' => $meta]);
+
+                $downResult = $this->runArtisanDown($projectRoot, $downSecret);
+                $meta['steps']['cutover_down'] = $downResult;
+                $run->update(['meta' => $meta]);
+
+                if (($downResult['exit_code'] ?? 1) !== 0) {
+                    throw new \RuntimeException('Failed to enable maintenance mode.');
+                }
+
+                $maintenanceStarted = true;
+
+                $step = 'cutover_db_wipe';
+                $wipeMeta = $this->wipeDatabase($connectionName, $projectRoot);
+                $meta['steps']['cutover_db_wipe'] = $wipeMeta;
+                $run->update(['meta' => $meta]);
+
+                if (($wipeMeta['exit_code'] ?? 1) !== 0) {
+                    throw new \RuntimeException('Database wipe failed.');
+                }
+
+                $dbWiped = true;
+
+                $step = 'cutover_db_import';
+                $importMeta = $this->importMysqlDump($connectionName, $dbSnapshotDumpPath, $projectRoot);
+                $meta['steps']['cutover_db_import'] = $importMeta;
+                $run->update(['meta' => $meta]);
+
+                if (($importMeta['exit_code'] ?? 1) !== 0) {
+                    throw new \RuntimeException('Database restore failed.');
+                }
+
+                $step = 'cutover_optimize_clear';
+                $optimizeResult = $this->runArtisan(['optimize:clear'], $projectRoot);
+                $meta['steps']['cutover_optimize_clear'] = $optimizeResult;
+                $run->update(['meta' => $meta]);
+
+                $step = 'cutover_queue_restart';
+                $queueResult = $this->runArtisan(['queue:restart'], $projectRoot);
+                $meta['steps']['cutover_queue_restart'] = $queueResult;
+                $run->update(['meta' => $meta]);
+
+                $step = 'cutover_up';
+                $upResult = $this->runArtisan(['up'], $projectRoot);
+                $upResult = $this->normalizeAlreadyUpResult($upResult);
+                $meta['steps']['cutover_up'] = $upResult;
+                $run->update(['meta' => $meta]);
+
+                if (($upResult['exit_code'] ?? 1) !== 0) {
+                    throw new \RuntimeException('Failed to disable maintenance mode.');
+                }
+
+                $maintenanceCompleted = true;
+
+                $run->update([
+                    'status' => 'success',
+                    'finished_at' => now(),
+                    'meta' => $meta,
+                ]);
+
+                return;
             }
 
             $step = 'stage_restic_restore';
@@ -1315,6 +1429,216 @@ class RunRestoreJob implements ShouldQueue
     protected function resolveDumpPath(string $projectRoot): string
     {
         return $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function fetchDatabaseDumpFromSnapshot(
+        ResticRunner $runner,
+        array $snapshotInfo,
+        string $projectRoot,
+        ?int $runId,
+    ): array {
+        $snapshotId = $this->normalizeScalar($snapshotInfo['id'] ?? null);
+
+        if ($snapshotId === null) {
+            return [
+                'exit_code' => 1,
+                'stderr' => 'Snapshot ID missing for dump.',
+            ];
+        }
+
+        $candidates = $this->dumpPathCandidates($snapshotInfo, $projectRoot);
+
+        if ($candidates === []) {
+            return [
+                'exit_code' => 1,
+                'stderr' => 'No dump path candidates were resolved.',
+            ];
+        }
+
+        $restoreDir = $this->makeRestoreDirectory($runId);
+        $targetPath = $restoreDir . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        $attempts = [];
+        $dumpFailure = null;
+
+        foreach ($candidates as $candidate) {
+            $result = $runner->dump(
+                $snapshotId,
+                $candidate,
+                $targetPath,
+                [
+                    'timeout' => min(1800, $this->timeout),
+                    'capture_output' => true,
+                    'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                ],
+            );
+
+            $formatted = $this->formatProcessResult($result);
+            $attempts[] = [
+                'method' => 'dump',
+                'snapshot_path' => $candidate,
+                'result' => $formatted,
+            ];
+
+            if ($result->exitCode === 0 && is_file($targetPath)) {
+                return [
+                    'exit_code' => 0,
+                    'method' => 'dump',
+                    'snapshot_path' => $candidate,
+                    'dump_path' => $targetPath,
+                    'dump' => $formatted,
+                    'attempts' => $attempts,
+                    'cleanup_paths' => [$restoreDir],
+                ];
+            }
+
+            if ($this->resticPathNotFound($result->stderr)) {
+                continue;
+            }
+
+            $dumpFailure = [
+                'exit_code' => 1,
+                'method' => 'dump',
+                'snapshot_path' => $candidate,
+                'dump_path' => $targetPath,
+                'dump' => $formatted,
+                'attempts' => $attempts,
+                'cleanup_paths' => [$restoreDir],
+            ];
+
+            if ($this->resticDumpTargetUnsupported($result->stderr)) {
+                break;
+            }
+
+            break;
+        }
+
+        foreach ($candidates as $candidate) {
+            $result = $runner->restore(
+                $snapshotId,
+                $restoreDir,
+                [
+                    'include' => [$candidate],
+                    'timeout' => min(1800, $this->timeout),
+                    'capture_output' => true,
+                    'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                ],
+            );
+
+            $formatted = $this->formatProcessResult($result);
+            $attempts[] = [
+                'method' => 'restore_include',
+                'snapshot_path' => $candidate,
+                'result' => $formatted,
+            ];
+
+            $dumpPath = $this->resolveDumpPathFromRestoreTarget($restoreDir, $candidate);
+
+            if ($result->exitCode === 0 && is_file($dumpPath)) {
+                return [
+                    'exit_code' => 0,
+                    'method' => 'restore_include',
+                    'snapshot_path' => $candidate,
+                    'dump_path' => $dumpPath,
+                    'restore' => $formatted,
+                    'attempts' => $attempts,
+                    'cleanup_paths' => [$restoreDir],
+                ];
+            }
+
+            if ($this->resticPathNotFound($result->stderr)) {
+                continue;
+            }
+
+            return [
+                'exit_code' => 1,
+                'method' => 'restore_include',
+                'snapshot_path' => $candidate,
+                'dump_path' => $dumpPath,
+                'restore' => $formatted,
+                'attempts' => $attempts,
+                'cleanup_paths' => [$restoreDir],
+            ];
+        }
+
+        if (is_array($dumpFailure)) {
+            $dumpFailure['attempts'] = $attempts;
+
+            return $dumpFailure;
+        }
+
+        return [
+            'exit_code' => 1,
+            'method' => 'not_found',
+            'stderr' => 'Database dump file not found in snapshot.',
+            'attempts' => $attempts,
+            'cleanup_paths' => [$restoreDir],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $snapshotInfo
+     * @return array<int, string>
+     */
+    protected function dumpPathCandidates(array $snapshotInfo, string $projectRoot): array
+    {
+        $candidates = [];
+
+        $root = $this->normalizeScalar($projectRoot);
+        if ($root !== null) {
+            $candidates[] = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        }
+
+        $paths = $snapshotInfo['paths'] ?? [];
+        if (is_array($paths)) {
+            foreach ($paths as $path) {
+                if (! is_string($path)) {
+                    continue;
+                }
+
+                $path = trim($path);
+
+                if ($path === '') {
+                    continue;
+                }
+
+                $candidates[] = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+            }
+        }
+
+        $candidates = array_values(array_unique($candidates));
+
+        return $candidates;
+    }
+
+    protected function resolveDumpPathFromRestoreTarget(string $restoreDir, string $snapshotPath): string
+    {
+        $relative = ltrim($snapshotPath, DIRECTORY_SEPARATOR);
+
+        return rtrim($restoreDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relative;
+    }
+
+    protected function resticPathNotFound(string $stderr): bool
+    {
+        $message = strtolower($stderr);
+
+        return str_contains($message, 'not found in the repository')
+            || str_contains($message, 'not found in snapshot')
+            || str_contains($message, 'does not exist')
+            || str_contains($message, 'path does not exist')
+            || str_contains($message, 'no such file')
+            || str_contains($message, 'not a file');
+    }
+
+    protected function resticDumpTargetUnsupported(string $stderr): bool
+    {
+        $message = strtolower($stderr);
+
+        return str_contains($message, 'unknown flag: --target')
+            || str_contains($message, 'unknown option')
+            || str_contains($message, 'flag provided but not defined');
     }
 
     protected function resolveSafetyDumpPath(string $rollbackDir): ?string
