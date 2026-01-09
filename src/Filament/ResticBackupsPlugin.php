@@ -5,6 +5,7 @@ namespace Siteko\FilamentResticBackups\Filament;
 use Filament\Contracts\Plugin;
 use Filament\Navigation\NavigationGroup;
 use Filament\Panel;
+use Filament\Support\Assets\Css;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsRuns;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsSnapshots;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsSettings;
@@ -32,6 +33,13 @@ class ResticBackupsPlugin implements Plugin
             BackupsSnapshots::class,
             BackupsRuns::class,
         ]);
+
+        $panel->assets([
+            Css::make(
+                'restic-backups',
+                __DIR__ . '/../../resources/css/filament/restic-backups.css',
+            ),
+        ], 'siteko/filament-restic-backups');
 
         $panel->navigationGroups([
             NavigationGroup::make($this->getNavigationGroupLabel())

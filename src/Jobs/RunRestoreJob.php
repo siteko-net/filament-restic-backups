@@ -721,6 +721,7 @@ class RunRestoreJob implements ShouldQueue
         $socket = $this->normalizeScalar($connection['unix_socket'] ?? null);
         $prefix = $this->normalizeScalar($connection['prefix'] ?? null);
         $prefix = $this->normalizeScalar($connection['prefix'] ?? null);
+        $prefix = $this->normalizeScalar($connection['prefix'] ?? null);
 
         if ($database === null) {
             return [
@@ -1725,6 +1726,7 @@ class RunRestoreJob implements ShouldQueue
         $user = $this->normalizeScalar($connection['username'] ?? null);
         $database = $this->normalizeScalar($connection['database'] ?? null);
         $socket = $this->normalizeScalar($connection['unix_socket'] ?? null);
+        $prefix = $this->normalizeScalar($connection['prefix'] ?? null);
 
         if ($database === null) {
             throw new \RuntimeException('Database name is not configured for the dump.');
