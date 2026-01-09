@@ -29,7 +29,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
 
     public static function getNavigationSort(): ?int
     {
-        return static::baseNavigationSort() + 2;
+        return static::baseNavigationSort() + 3;
     }
 
     public function table(Table $table): Table

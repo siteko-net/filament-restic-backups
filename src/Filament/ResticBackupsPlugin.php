@@ -6,6 +6,10 @@ use Filament\Contracts\Plugin;
 use Filament\Navigation\NavigationGroup;
 use Filament\Panel;
 use Filament\Support\Assets\Css;
+use Filament\Support\Facades\FilamentView;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Support\HtmlString;
+use Siteko\FilamentResticBackups\Filament\Pages\BackupsDashboard;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsRuns;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsSnapshots;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsSettings;
@@ -29,6 +33,7 @@ class ResticBackupsPlugin implements Plugin
         }
 
         $panel->pages([
+            BackupsDashboard::class,
             BackupsSettings::class,
             BackupsSnapshots::class,
             BackupsRuns::class,
@@ -49,7 +54,11 @@ class ResticBackupsPlugin implements Plugin
 
     public function boot(Panel $panel): void
     {
-        //
+        if (! $this->shouldRegisterOnPanel($panel)) {
+            return;
+        }
+
+        $this->registerInlineStylesWhenAssetsMissing();
     }
 
     protected function shouldRegisterOnPanel(Panel $panel): bool
@@ -71,5 +80,40 @@ class ResticBackupsPlugin implements Plugin
     protected function getNavigationGroupIcon(): string
     {
         return config('restic-backups.navigation.icon', 'heroicon-o-archive-box');
+    }
+
+    protected function registerInlineStylesWhenAssetsMissing(): void
+    {
+        $cssPath = __DIR__ . '/../../resources/css/filament/restic-backups.css';
+
+        if (! is_file($cssPath)) {
+            return;
+        }
+
+        $publicPath = $this->getPublishedCssPath();
+
+        if ($publicPath !== null && is_file($publicPath)) {
+            return;
+        }
+
+        FilamentView::registerRenderHook(
+            PanelsRenderHook::STYLES_AFTER,
+            function (): HtmlString {
+                $cssPath = __DIR__ . '/../../resources/css/filament/restic-backups.css';
+                $contents = is_file($cssPath) ? file_get_contents($cssPath) : '';
+
+                return new HtmlString('<style>' . trim((string) $contents) . '</style>');
+            },
+        );
+    }
+
+    protected function getPublishedCssPath(): ?string
+    {
+        $assetsPath = trim((string) config('filament.assets_path', ''), '/');
+        $relativePath = $assetsPath === ''
+            ? 'css/siteko/filament-restic-backups/restic-backups.css'
+            : $assetsPath . '/css/siteko/filament-restic-backups/restic-backups.css';
+
+        return public_path($relativePath);
     }
 }

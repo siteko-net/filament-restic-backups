@@ -47,6 +47,40 @@
     color: #b91c1c;
 }
 
+.rb-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+}
+
+.rb-badge--ok {
+    color: #065f46;
+    background: #ecfdf3;
+    border-color: #bbf7d0;
+}
+
+.rb-badge--warn {
+    color: #92400e;
+    background: #fffbeb;
+    border-color: #fde68a;
+}
+
+.rb-badge--error {
+    color: #b91c1c;
+    background: #fef2f2;
+    border-color: #fecaca;
+}
+
+.rb-muted {
+    color: #6b7280;
+}
+
 .rb-label {
     font-size: 0.75rem;
     text-transform: uppercase;

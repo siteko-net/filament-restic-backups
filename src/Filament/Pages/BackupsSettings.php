@@ -44,7 +44,7 @@ class BackupsSettings extends BaseBackupsPage
 
     public static function getNavigationSort(): ?int
     {
-        return static::baseNavigationSort();
+        return static::baseNavigationSort() + 1;
     }
 
     public function mount(): void

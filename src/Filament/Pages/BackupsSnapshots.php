@@ -70,7 +70,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
     public static function getNavigationSort(): ?int
     {
-        return static::baseNavigationSort() + 1;
+        return static::baseNavigationSort() + 2;
     }
 
     public function mount(): void
