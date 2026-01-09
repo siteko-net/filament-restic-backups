@@ -1,0 +1,25 @@
+{
+    "name": "siteko/filament-restic-backups",
+    "type": "library",
+    "description": "Restic Backups skeleton package for Filament.",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "filament/filament": "^4.0",
+        "laravel/framework": "^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Siteko\\FilamentResticBackups\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Siteko\\FilamentResticBackups\\ResticBackupsServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
