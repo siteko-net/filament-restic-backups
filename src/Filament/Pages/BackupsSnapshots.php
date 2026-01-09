@@ -28,6 +28,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
+use Siteko\FilamentResticBackups\Jobs\ForgetSnapshotJob;
 use Siteko\FilamentResticBackups\Jobs\RunRestoreJob;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
@@ -147,6 +148,58 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ]),
             ])
             ->actions([
+                Action::make('delete')
+                    ->label('Delete')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->modalHeading('Delete snapshot')
+                    ->modalDescription('This will remove the snapshot from the repository. Prune may take some time.')
+                    ->disabled(fn (): bool => $this->snapshotError !== null)
+                    ->form(function (array $record): array {
+                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
+                        $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
+
+                        return [
+                            TextInput::make('confirmation')
+                                ->label('Confirm snapshot ID')
+                                ->helperText('Type the first 8 characters: ' . $shortId)
+                                ->required(),
+                        ];
+                    })
+                    ->action(function (array $data, array $record): void {
+                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
+                        $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
+
+                        if ($snapshotId === '' || $shortId === '') {
+                            Notification::make()
+                                ->title('Snapshot ID missing')
+                                ->body('Unable to determine snapshot ID for deletion.')
+                                ->danger()
+                                ->send();
+
+                            throw new Halt();
+                        }
+
+                        $confirmation = trim((string) ($data['confirmation'] ?? ''));
+
+                        if ($confirmation !== $shortId) {
+                            Notification::make()
+                                ->title('Confirmation mismatch')
+                                ->body('Type the first 8 characters of the snapshot ID to confirm.')
+                                ->danger()
+                                ->send();
+
+                            throw new Halt();
+                        }
+
+                        ForgetSnapshotJob::dispatch($snapshotId, auth()->id(), 'filament');
+
+                        Notification::make()
+                            ->title('Snapshot delete queued')
+                            ->body('Delete job has been queued and will run in background.')
+                            ->success()
+                            ->send();
+                    }),
                 Action::make('restore')
                     ->label('Restore...')
                     ->icon('heroicon-o-arrow-uturn-left')

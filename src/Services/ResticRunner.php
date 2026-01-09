@@ -123,6 +123,33 @@ class ResticRunner
     /**
      * @param  array<string, mixed>  $options
      */
+    public function forgetSnapshot(string $snapshotId, bool $prune = true, array $options = []): ProcessResult
+    {
+        $snapshotId = trim($snapshotId);
+
+        if ($snapshotId === '') {
+            throw new ResticConfigurationException(['snapshot_id'], 'Snapshot ID is required for forget.');
+        }
+
+        $command = ['forget', $snapshotId];
+        $expectsJson = (bool) ($options['json'] ?? false);
+
+        unset($options['json']);
+
+        if ($expectsJson) {
+            $command[] = '--json';
+        }
+
+        if ($prune) {
+            $command[] = '--prune';
+        }
+
+        return $this->run($command, options: $options, expectsJson: $expectsJson);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
     public function check(array $options = []): ProcessResult
     {
         $command = ['check'];

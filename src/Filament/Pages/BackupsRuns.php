@@ -91,6 +91,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                         'backup' => 'Backup',
                         'check' => 'Check',
                         'forget' => 'Retention',
+                        'forget_snapshot' => 'Delete snapshot',
                         'restore' => 'Restore',
                     ]),
                 Filter::make('started_at')
