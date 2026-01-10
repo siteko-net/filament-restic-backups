@@ -158,7 +158,7 @@ class BackupsOverview
         $stale = $info !== null ? $operationLock->isStale() : null;
 
         try {
-            $lock = Cache::lock(OperationLock::LOCK_KEY, 1);
+            $lock = $operationLock->repository()->lock(OperationLock::LOCK_KEY, 1);
             $acquired = $lock->get();
 
             if ($acquired) {

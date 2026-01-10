@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace Siteko\FilamentResticBackups\Support;
 
 use Illuminate\Contracts\Cache\Lock;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Contracts\Cache\Repository;
+use Throwable;
 
 class OperationLockHandle
 {
@@ -17,6 +18,7 @@ class OperationLockHandle
         private array $info,
         private int $ttlSeconds,
         private string $infoKey,
+        private Repository $store,
     ) {
     }
 
@@ -63,12 +65,25 @@ class OperationLockHandle
             $this->info['last_heartbeat_at'] = now()->toIso8601String();
         }
 
-        Cache::put($this->infoKey, $this->info, $this->ttlSeconds);
+        try {
+            $this->store->put($this->infoKey, $this->info, $this->ttlSeconds);
+        } catch (Throwable) {
+            // Ignore cache store failures; do not block main flow.
+        }
     }
 
     public function release(): void
     {
-        $this->lock->release();
-        Cache::forget($this->infoKey);
+        try {
+            $this->lock->release();
+        } catch (Throwable) {
+            // Best-effort only.
+        }
+
+        try {
+            $this->store->forget($this->infoKey);
+        } catch (Throwable) {
+            // Best-effort only.
+        }
     }
 }

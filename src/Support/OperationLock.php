@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Support;
 
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 
@@ -21,7 +22,8 @@ class OperationLock
         int $blockSeconds = 30,
         array $context = [],
     ): ?OperationLockHandle {
-        $lock = Cache::lock(self::LOCK_KEY, $ttlSeconds);
+        $store = $this->repository();
+        $lock = $store->lock(self::LOCK_KEY, $ttlSeconds);
 
         try {
             $acquired = $blockSeconds > 0
@@ -49,9 +51,13 @@ class OperationLock
             'context' => $context,
         ];
 
-        Cache::put(self::INFO_KEY, $info, $ttlSeconds);
+        try {
+            $store->put(self::INFO_KEY, $info, $ttlSeconds);
+        } catch (Throwable) {
+            // Ignore cache store failures; lock ownership still stands.
+        }
 
-        return new OperationLockHandle($lock, $info, $ttlSeconds, self::INFO_KEY);
+        return new OperationLockHandle($lock, $info, $ttlSeconds, self::INFO_KEY, $store);
     }
 
     /**
@@ -59,7 +65,11 @@ class OperationLock
      */
     public function getInfo(): ?array
     {
-        $info = Cache::get(self::INFO_KEY);
+        try {
+            $info = $this->repository()->get(self::INFO_KEY);
+        } catch (Throwable) {
+            return null;
+        }
 
         return is_array($info) ? $info : null;
     }
@@ -90,12 +100,38 @@ class OperationLock
     public function forceRelease(): bool
     {
         try {
-            Cache::lock(self::LOCK_KEY, 1)->forceRelease();
-            Cache::forget(self::INFO_KEY);
+            $store = $this->repository();
+            $store->lock(self::LOCK_KEY, 1)->forceRelease();
+            $store->forget(self::INFO_KEY);
 
             return true;
         } catch (Throwable) {
             return false;
         }
+    }
+
+    public function repository(): Repository
+    {
+        $storeName = config('restic-backups.locks.store');
+
+        if (is_string($storeName) && $storeName !== '') {
+            try {
+                return Cache::store($storeName);
+            } catch (Throwable) {
+                // Fall back to default store.
+            }
+        }
+
+        $defaultStore = config('cache.default');
+
+        if ($defaultStore === 'database') {
+            try {
+                return Cache::store('file');
+            } catch (Throwable) {
+                // Fall back to default store.
+            }
+        }
+
+        return Cache::store();
     }
 }

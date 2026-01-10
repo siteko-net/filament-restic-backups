@@ -40,4 +40,9 @@ return [
             'backup_settings',
         ],
     ],
+
+    'locks' => [
+        // Cache store used for operation locks and heartbeats.
+        'store' => env('RESTIC_BACKUPS_LOCK_STORE', 'file'),
+    ],
 ];
