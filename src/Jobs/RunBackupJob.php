@@ -9,13 +9,14 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticProcessException;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\OperationLock;
+use Siteko\FilamentResticBackups\Support\OperationLockHandle;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -27,9 +28,10 @@ class RunBackupJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    private const LOCK_KEY = 'restic-backups:operation';
     private const LOCK_TTL_SECONDS = 7200;
     private const META_OUTPUT_LIMIT = 204800;
+    private const LOCK_BLOCK_SECONDS = 30;
+    private const REQUEUE_DELAYS = [60, 120, 300];
 
     public int $timeout = 7200;
     public int $tries = 1;
@@ -46,12 +48,21 @@ class RunBackupJob implements ShouldQueue
     ) {
     }
 
-    public function handle(ResticRunner $runner): void
+    public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
-        $lock = Cache::lock(self::LOCK_KEY, $this->lockTtl());
+        $lockHandle = $operationLock->acquire(
+            'backup',
+            $this->lockTtl(),
+            self::LOCK_BLOCK_SECONDS,
+            [
+                'trigger' => $this->normalizeTrigger($this->trigger),
+                'tags' => $this->normalizeTags($this->tags),
+                'connection' => $this->connectionName ?? (string) config('database.default'),
+            ],
+        );
 
-        if (! $lock->get()) {
-            $this->recordSkippedRun();
+        if (! $lockHandle instanceof OperationLockHandle) {
+            $this->requeueOrReturn();
 
             return;
         }
@@ -83,8 +94,10 @@ class RunBackupJob implements ShouldQueue
                 'started_at' => now(),
                 'meta' => $meta,
             ]);
+            $lockHandle->setRunId($run->id);
 
             $step = 'dump';
+            $lockHandle->heartbeat(['step' => $step]);
             $dumpMeta = $this->dumpDatabase($connectionName, $dumpPath);
             $dumpMeta = $this->normalizeDumpMeta($dumpMeta);
             $meta['dump'] = $dumpMeta;
@@ -95,6 +108,7 @@ class RunBackupJob implements ShouldQueue
             }
 
             $step = 'restic_backup';
+            $lockHandle->heartbeat(['step' => $step]);
             $backupTags = $this->buildTags($meta['tags'], $meta['trigger']);
             $meta['tags'] = $backupTags;
             $backupResult = $runner->backup(
@@ -104,6 +118,10 @@ class RunBackupJob implements ShouldQueue
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
+                        $lockHandle->heartbeat(array_merge(['step' => $step], $context));
+                    },
+                    'heartbeat_every' => 20,
                 ],
             );
 
@@ -129,11 +147,16 @@ class RunBackupJob implements ShouldQueue
                     ];
                 } else {
                     $step = 'retention';
+                    $lockHandle->heartbeat(['step' => $step]);
                     $forgetResult = $runner->forget($retention, [
                         'prune' => true,
                         'timeout' => $this->timeout,
                         'capture_output' => true,
                         'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                        'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
+                            $lockHandle->heartbeat(array_merge(['step' => $step], $context));
+                        },
+                        'heartbeat_every' => 20,
                     ]);
 
                     $meta['retention'] = $this->formatProcessResult($forgetResult);
@@ -165,30 +188,45 @@ class RunBackupJob implements ShouldQueue
 
             throw $exception;
         } finally {
-            $lock->release();
+            $lockHandle->release();
         }
-    }
-
-    protected function recordSkippedRun(): void
-    {
-        $tags = $this->normalizeTags($this->tags);
-
-        BackupRun::query()->create([
-            'type' => 'backup',
-            'status' => 'skipped',
-            'started_at' => now(),
-            'finished_at' => now(),
-            'meta' => [
-                'trigger' => $this->normalizeTrigger($this->trigger),
-                'tags' => $tags,
-                'reason' => 'lock_unavailable',
-            ],
-        ]);
     }
 
     protected function lockTtl(): int
     {
         return max(self::LOCK_TTL_SECONDS, $this->timeout);
+    }
+
+    protected function requeueOrReturn(): void
+    {
+        if (! $this->job) {
+            return;
+        }
+
+        if (($this->connection ?? config('queue.default')) === 'sync') {
+            return;
+        }
+
+        $delay = $this->nextRequeueDelay();
+
+        $pending = self::dispatch($this->tags, $this->trigger, $this->connectionName, $this->runRetention)
+            ->delay($delay);
+
+        if ($this->queue) {
+            $pending->onQueue($this->queue);
+        }
+
+        if ($this->connection) {
+            $pending->onConnection($this->connection);
+        }
+    }
+
+    protected function nextRequeueDelay(): int
+    {
+        $attempt = method_exists($this, 'attempts') ? max(1, (int) $this->attempts()) : 1;
+        $index = min($attempt - 1, count(self::REQUEUE_DELAYS) - 1);
+
+        return self::REQUEUE_DELAYS[$index] ?? 60;
     }
 
     /**

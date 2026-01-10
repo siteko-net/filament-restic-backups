@@ -10,13 +10,13 @@ use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\OperationLock;
 use Throwable;
 
 class BackupsOverview
 {
     private const CACHE_KEY = 'restic-backups:overview:repo';
     private const CACHE_TTL_SECONDS = 45;
-    private const LOCK_KEY = 'restic-backups:operation';
     private const ERROR_SNIPPET_LIMIT = 600;
 
     /**
@@ -29,7 +29,7 @@ class BackupsOverview
 
         $repo = $this->getRepositoryOverview($settings, $force);
         $runs = $this->getRuns();
-        $system = $this->getSystemDiagnostics($projectRoot, $runs);
+        $system = $this->getSystemDiagnostics($projectRoot);
 
         return [
             'settings' => [
@@ -59,18 +59,11 @@ class BackupsOverview
         $lastRestore = BackupRun::query()->where('type', 'restore')->latest('started_at')->first();
         $lastFailed = BackupRun::query()->where('status', 'failed')->latest('started_at')->first();
 
-        $lastSkippedLock = BackupRun::query()
-            ->where('status', 'skipped')
-            ->where('meta->reason', 'lock_unavailable')
-            ->latest('started_at')
-            ->first();
-
         return [
             'last_any' => $lastAny,
             'last_backup' => $lastBackup,
             'last_restore' => $lastRestore,
             'last_failed' => $lastFailed,
-            'last_skipped_lock' => $lastSkippedLock,
         ];
     }
 
@@ -141,14 +134,9 @@ class BackupsOverview
     /**
      * @return array<string, mixed>
      */
-    protected function getSystemDiagnostics(string $projectRoot, array $runs): array
+    protected function getSystemDiagnostics(string $projectRoot): array
     {
         $lockInfo = $this->checkLock();
-
-        $skippedLock = $runs['last_skipped_lock'] ?? null;
-        if ($skippedLock instanceof BackupRun && $lockInfo['note'] === null) {
-            $lockInfo['note'] = 'Recent run skipped because another operation was locked.';
-        }
 
         return [
             'disk_free_bytes' => $this->getDiskFreeBytes($projectRoot),
@@ -165,29 +153,47 @@ class BackupsOverview
      */
     protected function checkLock(): array
     {
+        $operationLock = app(OperationLock::class);
+        $info = $operationLock->getInfo();
+        $stale = $info !== null ? $operationLock->isStale() : null;
+
         try {
-            $lock = Cache::lock(self::LOCK_KEY, 1);
+            $lock = Cache::lock(OperationLock::LOCK_KEY, 1);
             $acquired = $lock->get();
 
             if ($acquired) {
                 $lock->release();
 
-                return [
+                $state = [
                     'likely_locked' => false,
                     'note' => null,
                 ];
+            } else {
+                $state = [
+                    'likely_locked' => true,
+                    'note' => null,
+                ];
             }
-
-            return [
-                'likely_locked' => true,
-                'note' => null,
-            ];
         } catch (Throwable $exception) {
-            return [
+            $state = [
                 'likely_locked' => null,
                 'note' => 'Lock driver not supported or unavailable.',
             ];
         }
+
+        if ($info !== null) {
+            $state['likely_locked'] = true;
+            $state['info'] = $info;
+            $state['stale'] = $stale;
+        } else {
+            $state['info'] = null;
+            $state['stale'] = null;
+            if ($state['likely_locked'] === true && $state['note'] === null) {
+                $state['note'] = 'Lock is held but owner info is missing.';
+            }
+        }
+
+        return $state;
     }
 
     protected function normalizeScheduleEnabled(?BackupSetting $settings): ?bool

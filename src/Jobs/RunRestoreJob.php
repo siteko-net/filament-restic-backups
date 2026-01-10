@@ -10,7 +10,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\DTO\ProcessResult;
@@ -19,6 +18,8 @@ use Siteko\FilamentResticBackups\Exceptions\ResticProcessException;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\OperationLock;
+use Siteko\FilamentResticBackups\Support\OperationLockHandle;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -30,10 +31,11 @@ class RunRestoreJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    private const LOCK_KEY = 'restic-backups:operation';
     private const LOCK_TTL_SECONDS = 21600;
     private const META_OUTPUT_LIMIT = 204800;
     private const ROLLBACK_CLEANUP_DELAY_HOURS = 24;
+    private const LOCK_BLOCK_SECONDS = 60;
+    private const REQUEUE_DELAYS = [120, 300, 600];
 
     public int $timeout = 21600;
     public int $tries = 1;
@@ -49,12 +51,22 @@ class RunRestoreJob implements ShouldQueue
     ) {
     }
 
-    public function handle(ResticRunner $runner): void
+    public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
-        $lock = Cache::lock(self::LOCK_KEY, $this->lockTtl());
+        $lockHandle = $operationLock->acquire(
+            'restore',
+            $this->lockTtl(),
+            self::LOCK_BLOCK_SECONDS,
+            [
+                'snapshot_id' => $this->snapshotId,
+                'scope' => $this->scope,
+                'mode' => $this->mode,
+                'trigger' => $this->normalizeTrigger($this->trigger),
+            ],
+        );
 
-        if (! $lock->get()) {
-            $this->recordSkippedRun();
+        if (! $lockHandle instanceof OperationLockHandle) {
+            $this->requeueOrReturn();
 
             return;
         }
@@ -106,8 +118,10 @@ class RunRestoreJob implements ShouldQueue
                 'started_at' => now(),
                 'meta' => $meta,
             ]);
+            $lockHandle->setRunId($run->id);
 
             $step = 'preflight';
+            $lockHandle->heartbeat(['step' => $step]);
             $versionResult = $runner->version();
             $meta['steps']['restic_version'] = $this->formatProcessResult($versionResult);
             $run->update(['meta' => $meta]);
@@ -138,6 +152,7 @@ class RunRestoreJob implements ShouldQueue
 
             if ($this->requiresFiles($scope) && $mode === 'atomic') {
                 $step = 'preflight_fs';
+                $lockHandle->heartbeat(['step' => $step]);
                 $sameFs = $this->sameFilesystem($projectRoot, dirname($projectRoot));
                 $meta['steps']['preflight_fs'] = [
                     'exit_code' => $sameFs ? 0 : 1,
@@ -154,6 +169,7 @@ class RunRestoreJob implements ShouldQueue
             }
 
             $step = 'preflight_space';
+            $lockHandle->heartbeat(['step' => $step]);
             $spaceMeta = $this->preflightSpace($runner, $snapshotInfo['id'], $projectRoot, $scope);
             $meta['steps']['preflight_space'] = $spaceMeta;
             $run->update(['meta' => $meta]);
@@ -164,7 +180,16 @@ class RunRestoreJob implements ShouldQueue
 
             if ($scope === 'db') {
                 $step = 'dump_db_from_snapshot';
-                $dumpMeta = $this->fetchDatabaseDumpFromSnapshot($runner, $snapshotInfo, $projectRoot, $run->id ?? null);
+                $lockHandle->heartbeat(['step' => $step]);
+                $dumpMeta = $this->fetchDatabaseDumpFromSnapshot(
+                    $runner,
+                    $snapshotInfo,
+                    $projectRoot,
+                    $run->id ?? null,
+                    function (array $context = []) use ($lockHandle, $step): void {
+                        $lockHandle->heartbeat(array_merge(['step' => $step], $context));
+                    },
+                );
                 $meta['steps']['dump_db_from_snapshot'] = $dumpMeta;
                 $meta['restore'] = array_merge($meta['restore'] ?? [], [
                     'db_restore_method' => $dumpMeta['method'] ?? null,
@@ -189,7 +214,8 @@ class RunRestoreJob implements ShouldQueue
 
                 if ($this->safetyBackup) {
                     $step = 'safety_backup';
-                    $safetyMeta = $this->runSafetyBackup($runner, $settings, $projectRoot, $connectionName, $snapshotInfo, (int) $run->id);
+                    $lockHandle->heartbeat(['step' => $step]);
+                    $safetyMeta = $this->runSafetyBackup($runner, $settings, $projectRoot, $connectionName, $snapshotInfo, (int) $run->id, $lockHandle);
                     $meta['steps']['safety_backup'] = $safetyMeta;
                     $run->update(['meta' => $meta]);
 
@@ -207,6 +233,7 @@ class RunRestoreJob implements ShouldQueue
                 }
 
                 $step = 'cutover_down';
+                $lockHandle->heartbeat(['step' => $step]);
                 $downSecret = $this->generateDownSecret();
                 $meta['restore'] = array_merge($meta['restore'] ?? [], [
                     'secret' => $downSecret,
@@ -225,6 +252,7 @@ class RunRestoreJob implements ShouldQueue
                 $maintenanceStarted = true;
 
                 $step = 'cutover_db_wipe';
+                $lockHandle->heartbeat(['step' => $step]);
                 $wipeMeta = $this->wipeDatabase($connectionName, $projectRoot);
                 $meta['steps']['cutover_db_wipe'] = $wipeMeta;
                 $run->update(['meta' => $meta]);
@@ -236,6 +264,7 @@ class RunRestoreJob implements ShouldQueue
                 $dbWiped = true;
 
                 $step = 'cutover_db_import';
+                $lockHandle->heartbeat(['step' => $step]);
                 $importMeta = $this->importMysqlDump($connectionName, $dbSnapshotDumpPath, $projectRoot);
                 $meta['steps']['cutover_db_import'] = $importMeta;
                 $run->update(['meta' => $meta]);
@@ -245,16 +274,19 @@ class RunRestoreJob implements ShouldQueue
                 }
 
                 $step = 'cutover_optimize_clear';
+                $lockHandle->heartbeat(['step' => $step]);
                 $optimizeResult = $this->runArtisan(['optimize:clear'], $projectRoot);
                 $meta['steps']['cutover_optimize_clear'] = $optimizeResult;
                 $run->update(['meta' => $meta]);
 
                 $step = 'cutover_queue_restart';
+                $lockHandle->heartbeat(['step' => $step]);
                 $queueResult = $this->runArtisan(['queue:restart'], $projectRoot);
                 $meta['steps']['cutover_queue_restart'] = $queueResult;
                 $run->update(['meta' => $meta]);
 
                 $step = 'cutover_up';
+                $lockHandle->heartbeat(['step' => $step]);
                 $upResult = $this->runArtisan(['up'], $projectRoot);
                 $upResult = $this->normalizeAlreadyUpResult($upResult);
                 $meta['steps']['cutover_up'] = $upResult;
@@ -276,6 +308,7 @@ class RunRestoreJob implements ShouldQueue
             }
 
             $step = 'stage_restic_restore';
+            $lockHandle->heartbeat(['step' => $step]);
             $stageTargetDir = $this->makeStagingTargetDir($projectRoot, $run->id ?? null);
             $cleanupPaths[] = $stageTargetDir;
 
@@ -286,6 +319,10 @@ class RunRestoreJob implements ShouldQueue
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
+                        $lockHandle->heartbeat(array_merge(['step' => $step], $context));
+                    },
+                    'heartbeat_every' => 20,
                 ],
             );
 
@@ -316,6 +353,7 @@ class RunRestoreJob implements ShouldQueue
             }
 
             $step = 'stage_validate';
+            $lockHandle->heartbeat(['step' => $step]);
             $validateMeta = $this->validateStaging($stagingSwapDir, $scope);
             $meta['steps']['stage_validate'] = $validateMeta;
             $run->update(['meta' => $meta]);
@@ -326,7 +364,8 @@ class RunRestoreJob implements ShouldQueue
 
             if ($this->safetyBackup) {
                 $step = 'safety_backup';
-                $safetyMeta = $this->runSafetyBackup($runner, $settings, $projectRoot, $connectionName, $snapshotInfo, (int) $run->id);
+                $lockHandle->heartbeat(['step' => $step]);
+                $safetyMeta = $this->runSafetyBackup($runner, $settings, $projectRoot, $connectionName, $snapshotInfo, (int) $run->id, $lockHandle);
                 $meta['steps']['safety_backup'] = $safetyMeta;
                 $run->update(['meta' => $meta]);
 
@@ -344,6 +383,7 @@ class RunRestoreJob implements ShouldQueue
             }
 
             $step = 'cutover_down';
+            $lockHandle->heartbeat(['step' => $step]);
             $downSecret = $this->generateDownSecret();
             $meta['restore'] = array_merge($meta['restore'] ?? [], [
                 'secret' => $downSecret,
@@ -364,6 +404,7 @@ class RunRestoreJob implements ShouldQueue
             if ($this->requiresFiles($scope)) {
                 if ($mode === 'atomic') {
                     $step = 'cutover_swap';
+                    $lockHandle->heartbeat(['step' => $step]);
                     $rollbackDir = $this->makeRollbackDir($projectRoot);
                     $swapMeta = $this->swapDirectories($projectRoot, $stagingSwapDir, $rollbackDir);
                     $meta['steps']['cutover_swap'] = $swapMeta;
@@ -377,6 +418,8 @@ class RunRestoreJob implements ShouldQueue
                     }
 
                     $swapCompleted = true;
+                    $step = 'cutover_env_preserve';
+                    $lockHandle->heartbeat(['step' => $step]);
                     $envMeta = $this->preserveEnvFromRollback($rollbackDir, $projectRoot);
                     $meta['steps']['env_preserve'] = $envMeta;
 
@@ -387,6 +430,8 @@ class RunRestoreJob implements ShouldQueue
 
                     $run->update(['meta' => $meta]);
 
+                    $step = 'cutover_down_after_swap';
+                    $lockHandle->heartbeat(['step' => $step]);
                     $downAfterSwap = $this->runArtisanDown($projectRoot, $downSecret);
                     $meta['steps']['cutover_down_after_swap'] = $downAfterSwap;
                     $run->update(['meta' => $meta]);
@@ -396,6 +441,7 @@ class RunRestoreJob implements ShouldQueue
                     }
                 } else {
                     $step = 'cutover_swap';
+                    $lockHandle->heartbeat(['step' => $step]);
                     $swapMeta = $this->restoreFilesRsync($stagingSwapDir, $projectRoot);
                     $meta['steps']['cutover_swap'] = $swapMeta;
                     $run->update(['meta' => $meta]);
@@ -408,6 +454,7 @@ class RunRestoreJob implements ShouldQueue
 
             if ($this->requiresDb($scope)) {
                 $step = 'cutover_db_wipe';
+                $lockHandle->heartbeat(['step' => $step]);
                 $wipeMeta = $this->wipeDatabase($connectionName, $projectRoot);
                 $meta['steps']['cutover_db_wipe'] = $wipeMeta;
                 $run->update(['meta' => $meta]);
@@ -419,6 +466,7 @@ class RunRestoreJob implements ShouldQueue
                 $dbWiped = true;
 
                 $step = 'cutover_db_import';
+                $lockHandle->heartbeat(['step' => $step]);
                 $dumpPath = $this->resolveDumpPath($projectRoot);
                 $importMeta = $this->importMysqlDump($connectionName, $dumpPath, $projectRoot);
                 $meta['steps']['cutover_db_import'] = $importMeta;
@@ -431,21 +479,25 @@ class RunRestoreJob implements ShouldQueue
 
             if ($this->requiresFiles($scope)) {
                 $step = 'runtime_cleanup';
+                $lockHandle->heartbeat(['step' => $step]);
                 $runtimeMeta = $this->cleanupRuntimeArtifacts($projectRoot);
                 $meta['steps']['runtime_cleanup'] = $runtimeMeta;
                 $run->update(['meta' => $meta]);
 
                 $step = 'storage_link';
+                $lockHandle->heartbeat(['step' => $step]);
                 $storageLink = $this->runArtisan(['storage:link'], $projectRoot);
                 $meta['steps']['storage_link'] = $storageLink;
                 $run->update(['meta' => $meta]);
 
                 $step = 'cutover_optimize_clear';
+                $lockHandle->heartbeat(['step' => $step]);
                 $optimizeResult = $this->runArtisan(['optimize:clear'], $projectRoot);
                 $meta['steps']['cutover_optimize_clear'] = $optimizeResult;
                 $run->update(['meta' => $meta]);
 
                 $step = 'cutover_queue_restart';
+                $lockHandle->heartbeat(['step' => $step]);
                 $queueResult = $this->runArtisan(['queue:restart'], $projectRoot);
                 $meta['steps']['cutover_queue_restart'] = $queueResult;
                 $run->update(['meta' => $meta]);
@@ -453,6 +505,7 @@ class RunRestoreJob implements ShouldQueue
 
             if ($maintenanceStarted) {
                 $step = 'cutover_up';
+                $lockHandle->heartbeat(['step' => $step]);
                 $upResult = $this->runArtisan(['up'], $projectRoot);
                 $upResult = $this->normalizeAlreadyUpResult($upResult);
                 $meta['steps']['cutover_up'] = $upResult;
@@ -542,31 +595,51 @@ class RunRestoreJob implements ShouldQueue
                 $this->cleanupDirectory($path);
             }
 
-            $lock->release();
+            $lockHandle->release();
         }
-    }
-
-    protected function recordSkippedRun(): void
-    {
-        BackupRun::query()->create([
-            'type' => 'restore',
-            'status' => 'skipped',
-            'started_at' => now(),
-            'finished_at' => now(),
-            'meta' => [
-                'trigger' => $this->normalizeTrigger($this->trigger),
-                'snapshot_id' => $this->snapshotId,
-                'scope' => $this->normalizeScope($this->scope),
-                'mode' => $this->normalizeMode($this->mode, $this->normalizeScope($this->scope)),
-                'safety_backup' => $this->safetyBackup,
-                'reason' => 'lock_unavailable',
-            ],
-        ]);
     }
 
     protected function lockTtl(): int
     {
         return max(self::LOCK_TTL_SECONDS, $this->timeout);
+    }
+
+    protected function requeueOrReturn(): void
+    {
+        if (! $this->job) {
+            return;
+        }
+
+        if (($this->connection ?? config('queue.default')) === 'sync') {
+            return;
+        }
+
+        $delay = $this->nextRequeueDelay();
+
+        $pending = self::dispatch(
+            $this->snapshotId,
+            $this->scope,
+            $this->mode,
+            $this->safetyBackup,
+            $this->trigger,
+            $this->dbConnection,
+        )->delay($delay);
+
+        if ($this->queue) {
+            $pending->onQueue($this->queue);
+        }
+
+        if ($this->connection) {
+            $pending->onConnection($this->connection);
+        }
+    }
+
+    protected function nextRequeueDelay(): int
+    {
+        $attempt = method_exists($this, 'attempts') ? max(1, (int) $this->attempts()) : 1;
+        $index = min($attempt - 1, count(self::REQUEUE_DELAYS) - 1);
+
+        return self::REQUEUE_DELAYS[$index] ?? 120;
     }
 
     protected function normalizeScope(string $scope): string
@@ -668,6 +741,7 @@ class RunRestoreJob implements ShouldQueue
         string $connectionName,
         array $snapshot,
         int $runId,
+        ?OperationLockHandle $lockHandle = null,
     ): array {
         $dumpPath = storage_path('app/_backup/db.sql.gz');
         $dumpMeta = $this->dumpDatabase($connectionName, $dumpPath);
@@ -680,15 +754,20 @@ class RunRestoreJob implements ShouldQueue
             'trigger:restore',
         ];
 
-        $backupResult = $runner->backup(
-            $projectRoot,
-            $tags,
-            [
-                'timeout' => $this->timeout,
-                'capture_output' => true,
-                'max_output_bytes' => self::META_OUTPUT_LIMIT,
-            ],
-        );
+        $backupOptions = [
+            'timeout' => $this->timeout,
+            'capture_output' => true,
+            'max_output_bytes' => self::META_OUTPUT_LIMIT,
+        ];
+
+        if ($lockHandle instanceof OperationLockHandle) {
+            $backupOptions['heartbeat'] = fn (array $context = []): void => $lockHandle->heartbeat(
+                array_merge(['step' => 'safety_backup'], $context),
+            );
+            $backupOptions['heartbeat_every'] = 20;
+        }
+
+        $backupResult = $runner->backup($projectRoot, $tags, $backupOptions);
 
         return [
             'exit_code' => ($dumpMeta['exit_code'] ?? 1) === 0 && $backupResult->exitCode === 0 ? 0 : 1,
@@ -1439,6 +1518,7 @@ class RunRestoreJob implements ShouldQueue
         array $snapshotInfo,
         string $projectRoot,
         ?int $runId,
+        ?callable $heartbeat = null,
     ): array {
         $snapshotId = $this->normalizeScalar($snapshotInfo['id'] ?? null);
 
@@ -1472,6 +1552,8 @@ class RunRestoreJob implements ShouldQueue
                     'timeout' => min(1800, $this->timeout),
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'heartbeat' => $heartbeat,
+                    'heartbeat_every' => 20,
                 ],
             );
 
@@ -1524,6 +1606,8 @@ class RunRestoreJob implements ShouldQueue
                     'timeout' => min(1800, $this->timeout),
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'heartbeat' => $heartbeat,
+                    'heartbeat_every' => 20,
                 ],
             );
 

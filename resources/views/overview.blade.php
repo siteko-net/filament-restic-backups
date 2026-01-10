@@ -78,6 +78,9 @@
 
     $lock = $system['lock'] ?? [];
     $lockStatus = $lock['likely_locked'] ?? null;
+    $lockInfo = is_array($lock['info'] ?? null) ? $lock['info'] : null;
+    $lockContext = is_array($lockInfo['context'] ?? null) ? $lockInfo['context'] : [];
+    $lockStale = $lock['stale'] ?? null;
     $lockLabel = $lockStatus === true
         ? ['Likely locked', 'rb-badge rb-badge--warn']
         : ($lockStatus === false ? ['Not locked', 'rb-badge rb-badge--ok'] : ['Unknown', 'rb-badge rb-badge--warn']);
@@ -116,6 +119,19 @@
             <div class="rb-text">Settings configured: {{ ($settings['configured'] ?? false) ? 'yes' : 'no' }}</div>
             @if (array_key_exists('schedule_enabled', $settings))
                 <div class="rb-text">Schedule: {{ ($settings['schedule_enabled'] ?? false) ? 'enabled' : 'disabled' }}</div>
+            @endif
+            @if (is_array($lockInfo))
+                <div class="rb-text">Operation: {{ $lockInfo['type'] ?? 'n/a' }}</div>
+                <div class="rb-text">Run ID: {{ $lockInfo['run_id'] ?? 'n/a' }}</div>
+                <div class="rb-text">Started: {{ $lockInfo['started_at'] ?? 'n/a' }}</div>
+                <div class="rb-text">Heartbeat: {{ $lockInfo['last_heartbeat_at'] ?? 'n/a' }}</div>
+                <div class="rb-text">Host: {{ $lockInfo['hostname'] ?? 'n/a' }}</div>
+                @if (! empty($lockContext['step']))
+                    <div class="rb-text">Step: {{ $lockContext['step'] }}</div>
+                @endif
+                @if ($lockStale === true)
+                    <div class="rb-text rb-muted">Lock looks stale (no heartbeat recently).</div>
+                @endif
             @endif
             @if (! empty($lock['note']))
                 <div class="rb-text rb-muted">{{ $lock['note'] }}</div>

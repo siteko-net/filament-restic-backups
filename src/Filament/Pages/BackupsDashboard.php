@@ -11,6 +11,7 @@ use Filament\Schemas\Schema;
 use Filament\Schemas\Components\View as ViewComponent;
 use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Support\BackupsOverview;
+use Siteko\FilamentResticBackups\Support\OperationLock;
 
 class BackupsDashboard extends BaseBackupsPage
 {
@@ -47,6 +48,26 @@ class BackupsDashboard extends BaseBackupsPage
                         ->modalHeading('Run backup now')
                         ->modalDescription('This will start a backup job in the queue.')
                         ->action(function (): void {
+                            $lockInfo = app(OperationLock::class)->getInfo();
+
+                            if (is_array($lockInfo)) {
+                                $message = 'Another operation is running.';
+
+                                if (! empty($lockInfo['type'])) {
+                                    $message .= ' Type: ' . $lockInfo['type'] . '.';
+                                }
+
+                                if (! empty($lockInfo['run_id'])) {
+                                    $message .= ' Run ID: ' . $lockInfo['run_id'] . '.';
+                                }
+
+                                Notification::make()
+                                    ->title('Operation in progress')
+                                    ->body($message . ' Backup will wait in queue.')
+                                    ->warning()
+                                    ->send();
+                            }
+
                             RunBackupJob::dispatch([], 'manual', null, true);
 
                             Notification::make()

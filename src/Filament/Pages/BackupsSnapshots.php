@@ -32,6 +32,7 @@ use Siteko\FilamentResticBackups\Jobs\ForgetSnapshotJob;
 use Siteko\FilamentResticBackups\Jobs\RunRestoreJob;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\OperationLock;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -192,6 +193,26 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             throw new Halt();
                         }
 
+                        $lockInfo = app(OperationLock::class)->getInfo();
+
+                        if (is_array($lockInfo)) {
+                            $message = 'Another operation is running.';
+
+                            if (! empty($lockInfo['type'])) {
+                                $message .= ' Type: ' . $lockInfo['type'] . '.';
+                            }
+
+                            if (! empty($lockInfo['run_id'])) {
+                                $message .= ' Run ID: ' . $lockInfo['run_id'] . '.';
+                            }
+
+                            Notification::make()
+                                ->title('Operation in progress')
+                                ->body($message . ' Delete will wait in queue.')
+                                ->warning()
+                                ->send();
+                        }
+
                         ForgetSnapshotJob::dispatch($snapshotId, auth()->id(), 'filament');
 
                         Notification::make()
@@ -253,6 +274,26 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             throw new Halt();
                         }
 
+                        $lockInfo = app(OperationLock::class)->getInfo();
+
+                        if (is_array($lockInfo)) {
+                            $message = 'Another operation is running.';
+
+                            if (! empty($lockInfo['type'])) {
+                                $message .= ' Type: ' . $lockInfo['type'] . '.';
+                            }
+
+                            if (! empty($lockInfo['run_id'])) {
+                                $message .= ' Run ID: ' . $lockInfo['run_id'] . '.';
+                            }
+
+                            Notification::make()
+                                ->title('Operation in progress')
+                                ->body($message . ' Restore will wait in queue.')
+                                ->warning()
+                                ->send();
+                        }
+
                         RunRestoreJob::dispatch(
                             $snapshotId,
                             $scope,
@@ -282,6 +323,26 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     public function content(Schema $schema): Schema
     {
         $components = [];
+        $lockInfo = app(OperationLock::class)->getInfo();
+        $lockStale = is_array($lockInfo) ? app(OperationLock::class)->isStale() : false;
+
+        if (is_array($lockInfo)) {
+            $context = is_array($lockInfo['context'] ?? null) ? $lockInfo['context'] : [];
+
+            $components[] = Section::make('Operation in progress')
+                ->description('Another backup/restore operation is currently running.')
+                ->schema([
+                    Text::make(fn (): string => 'Type: ' . ($lockInfo['type'] ?? 'n/a')),
+                    Text::make(fn (): string => 'Run ID: ' . (string) ($lockInfo['run_id'] ?? 'n/a')),
+                    Text::make(fn (): string => 'Started: ' . ($lockInfo['started_at'] ?? 'n/a')),
+                    Text::make(fn (): string => 'Heartbeat: ' . ($lockInfo['last_heartbeat_at'] ?? 'n/a')),
+                    Text::make(fn (): string => 'Host: ' . ($lockInfo['hostname'] ?? 'n/a')),
+                    Text::make(fn (): string => 'Step: ' . ($context['step'] ?? 'n/a')),
+                    Text::make('Warning: lock heartbeat is stale.')
+                        ->color('danger')
+                        ->visible(fn (): bool => $lockStale),
+                ]);
+        }
 
         if ($this->snapshotError !== null) {
             $components[] = Section::make('Repository issue')

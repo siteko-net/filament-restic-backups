@@ -293,6 +293,10 @@ class ResticRunner
         $captureOutput = (bool) ($options['capture_output'] ?? true);
         $maxOutputBytes = (int) ($options['max_output_bytes'] ?? self::DEFAULT_MAX_OUTPUT_BYTES);
         $throwOnError = (bool) ($options['throw'] ?? false);
+        $heartbeat = $options['heartbeat'] ?? null;
+        $heartbeatEvery = (int) ($options['heartbeat_every'] ?? 20);
+
+        unset($options['heartbeat'], $options['heartbeat_every']);
 
         if ($expectsJson) {
             $captureOutput = true;
@@ -317,7 +321,29 @@ class ResticRunner
         $exceptionMessage = null;
 
         try {
-            $exitCode = $process->run();
+            if (is_callable($heartbeat)) {
+                $lastHeartbeat = microtime(true);
+                $heartbeatEvery = max(1, $heartbeatEvery);
+
+                $process->start();
+                $this->callHeartbeat($heartbeat, $command);
+
+                while ($process->isRunning()) {
+                    $process->checkTimeout();
+
+                    $now = microtime(true);
+                    if (($now - $lastHeartbeat) >= $heartbeatEvery) {
+                        $lastHeartbeat = $now;
+                        $this->callHeartbeat($heartbeat, $command);
+                    }
+
+                    usleep(200000);
+                }
+
+                $exitCode = $process->wait();
+            } else {
+                $exitCode = $process->run();
+            }
         } catch (Throwable $exception) {
             $exceptionMessage = $exception->getMessage();
             $exitCode = $process->getExitCode() ?? 1;
@@ -362,6 +388,44 @@ class ResticRunner
         }
 
         return $result;
+    }
+
+    /**
+     * @param  callable  $heartbeat
+     * @param  array<int, string>  $command
+     */
+    protected function callHeartbeat(callable $heartbeat, array $command): void
+    {
+        $safeCommand = $this->formatCommand($command);
+
+        $heartbeat([
+            'command' => $safeCommand,
+        ]);
+    }
+
+    /**
+     * @param  array<int, string>  $command
+     */
+    protected function formatCommand(array $command): string
+    {
+        if ($command === []) {
+            return '';
+        }
+
+        return implode(' ', array_map($this->escapeArgument(...), $command));
+    }
+
+    protected function escapeArgument(string $argument): string
+    {
+        if ($argument === '') {
+            return "''";
+        }
+
+        if (preg_match('/\s|["\\\\]/', $argument) !== 1) {
+            return $argument;
+        }
+
+        return '"' . addcslashes($argument, "\"\\") . '"';
     }
 
     protected function settings(): BackupSetting
