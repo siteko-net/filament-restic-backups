@@ -761,9 +761,9 @@ class RunRestoreJob implements ShouldQueue
         ];
 
         if ($lockHandle instanceof OperationLockHandle) {
-            $backupOptions['heartbeat'] = fn (array $context = []): void => $lockHandle->heartbeat(
-                array_merge(['step' => 'safety_backup'], $context),
-            );
+            $backupOptions['heartbeat'] = function (array $context = []) use ($lockHandle): void {
+                $lockHandle->heartbeat(array_merge(['step' => 'safety_backup'], $context));
+            };
             $backupOptions['heartbeat_every'] = 20;
         }
 
