@@ -125,10 +125,6 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.time'))
                     ->dateTime()
                     ->sortable(),
-                TextColumn::make('hostname')
-                    ->label(__('restic-backups::backups.pages.snapshots.table.columns.host'))
-                    ->sortable()
-                    ->toggleable(),
                 TextColumn::make('tags')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.tags'))
                     ->state(fn(array $record): array => $record['tags'] ?? [])
@@ -136,13 +132,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->listWithLineBreaks()
                     ->limitList(3)
                     ->expandableLimitedList()
-                    ->toggleable(),
-                TextColumn::make('paths_summary')
-                    ->label(__('restic-backups::backups.pages.snapshots.table.columns.paths'))
-                    ->state(fn(array $record): string => $this->formatPathsSummary($record['paths'] ?? []))
-                    ->tooltip(fn(array $record): ?string => $this->formatPathsTooltip($record['paths'] ?? []))
-                    ->toggleable(),
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
+            ->deferColumnManager(false)
             ->filters([
                 SelectFilter::make('tag')
                     ->label(__('restic-backups::backups.pages.snapshots.table.filters.tag'))
@@ -160,84 +152,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ]),
             ])
             ->pushRecordActions([
-                Action::make('delete')
-                    ->label(__('restic-backups::backups.pages.snapshots.actions.delete.label'))
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.delete.modal_heading'))
-                    ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.delete.modal_description'))
-                    ->disabled(fn(): bool => $this->snapshotError !== null)
-                    ->schema(function (array $record): array {
-                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
-                        $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
 
-                        return [
-                            TextInput::make('confirmation')
-                                ->label(__('restic-backups::backups.pages.snapshots.actions.delete.confirm_label'))
-                                ->helperText(__('restic-backups::backups.pages.snapshots.actions.delete.confirm_help', [
-                                    'short_id' => $shortId,
-                                ]))
-                                ->required(),
-                        ];
-                    })
-                    ->action(function (array $data, array $record): void {
-                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
-                        $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
-
-                        if ($snapshotId === '' || $shortId === '') {
-                            Notification::make()
-                                ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing'))
-                                ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing_delete'))
-                                ->danger()
-                                ->send();
-
-                            throw new Halt();
-                        }
-
-                        $confirmation = trim((string) ($data['confirmation'] ?? ''));
-
-                        if ($confirmation !== $shortId) {
-                            Notification::make()
-                                ->title(__('restic-backups::backups.pages.snapshots.notifications.confirmation_mismatch'))
-                                ->body(__('restic-backups::backups.pages.snapshots.notifications.confirmation_mismatch_body'))
-                                ->danger()
-                                ->send();
-
-                            throw new Halt();
-                        }
-
-                        $lockInfo = app(OperationLock::class)->getInfo();
-
-                        if (is_array($lockInfo)) {
-                            $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
-
-                            if (! empty($lockInfo['type'])) {
-                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
-                                    'type' => $lockInfo['type'],
-                                ]);
-                            }
-
-                            if (! empty($lockInfo['run_id'])) {
-                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
-                                    'run_id' => $lockInfo['run_id'],
-                                ]);
-                            }
-
-                            Notification::make()
-                                ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
-                                ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.delete_waits'))
-                                ->warning()
-                                ->send();
-                        }
-
-                        ForgetSnapshotJob::dispatch($snapshotId, auth()->id(), 'filament');
-
-                        Notification::make()
-                            ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_delete_queued'))
-                            ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_delete_queued_body'))
-                            ->success()
-                            ->send();
-                    }),
                 Action::make('restore')
                     ->label(__('restic-backups::backups.pages.snapshots.actions.restore.label'))
                     ->icon('heroicon-o-arrow-uturn-left')
@@ -387,8 +302,88 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             ->success()
                             ->send();
                     }),
+                Action::make('delete')
+                    ->iconButton()
+                    // ->label(__('restic-backups::backups.pages.snapshots.actions.delete.label'))
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.delete.modal_heading'))
+                    ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.delete.modal_description'))
+                    ->disabled(fn(): bool => $this->snapshotError !== null)
+                    ->schema(function (array $record): array {
+                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
+                        $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
+
+                        return [
+                            TextInput::make('confirmation')
+                                ->label(__('restic-backups::backups.pages.snapshots.actions.delete.confirm_label'))
+                                ->helperText(__('restic-backups::backups.pages.snapshots.actions.delete.confirm_help', [
+                                    'short_id' => $shortId,
+                                ]))
+                                ->required(),
+                        ];
+                    })
+                    ->action(function (array $data, array $record): void {
+                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
+                        $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
+
+                        if ($snapshotId === '' || $shortId === '') {
+                            Notification::make()
+                                ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing'))
+                                ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing_delete'))
+                                ->danger()
+                                ->send();
+
+                            throw new Halt();
+                        }
+
+                        $confirmation = trim((string) ($data['confirmation'] ?? ''));
+
+                        if ($confirmation !== $shortId) {
+                            Notification::make()
+                                ->title(__('restic-backups::backups.pages.snapshots.notifications.confirmation_mismatch'))
+                                ->body(__('restic-backups::backups.pages.snapshots.notifications.confirmation_mismatch_body'))
+                                ->danger()
+                                ->send();
+
+                            throw new Halt();
+                        }
+
+                        $lockInfo = app(OperationLock::class)->getInfo();
+
+                        if (is_array($lockInfo)) {
+                            $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
+
+                            if (! empty($lockInfo['type'])) {
+                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
+                                    'type' => $lockInfo['type'],
+                                ]);
+                            }
+
+                            if (! empty($lockInfo['run_id'])) {
+                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
+                                    'run_id' => $lockInfo['run_id'],
+                                ]);
+                            }
+
+                            Notification::make()
+                                ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
+                                ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.delete_waits'))
+                                ->warning()
+                                ->send();
+                        }
+
+                        ForgetSnapshotJob::dispatch($snapshotId, auth()->id(), 'filament');
+
+                        Notification::make()
+                            ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_delete_queued'))
+                            ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_delete_queued_body'))
+                            ->success()
+                            ->send();
+                    }),
                 Action::make('details')
-                    ->label(__('restic-backups::backups.pages.snapshots.actions.details.label'))
+                    // ->label(__('restic-backups::backups.pages.snapshots.actions.details.label'))
+                    ->iconButton()
                     ->icon('heroicon-o-document-text')
                     ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.details.modal_heading'))
                     ->modalSubmitAction(false)

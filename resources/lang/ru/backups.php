@@ -187,7 +187,7 @@ return [
                     'modal_submit_label' => 'Поставить в очередь',
                 ],
                 'export' => [
-                    'label' => 'Скачать архив...',
+                    'label' => 'Скачать...',
                     'modal_heading' => 'Скачать снапшот как архив',
                     'modal_description' => 'Создает архив на сервере (restic restore + tar.gz). Затем его можно скачать в разделе Запуски.',
                     'include_env_label' => 'Включить .env (небезопасно)',

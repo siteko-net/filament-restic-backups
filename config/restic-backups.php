@@ -7,7 +7,8 @@ return [
     'panel' => env('RESTIC_BACKUPS_PANEL', 'admin'),
 
     'navigation' => [
-        'group_label' => 'Backups',
+        // Set to null to use translations.
+        'group_label' => null,
         'icon' => 'heroicon-o-archive-box',
         'sort' => 30,
     ],

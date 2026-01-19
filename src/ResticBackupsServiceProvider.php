@@ -9,13 +9,13 @@ class ResticBackupsServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/restic-backups.php', 'restic-backups');
+        $this->registerTranslations();
     }
 
     public function boot(): void
     {
         $this->registerPublishing();
         $this->registerViews();
-        $this->registerTranslations();
         $this->registerCommands();
         $this->registerRoutes();
     }
