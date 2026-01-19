@@ -50,19 +50,19 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
             ->defaultSort('started_at', 'desc')
             ->columns([
                 TextColumn::make('started_at')
-                    ->label('Started')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.started'))
                     ->dateTime()
                     ->sortable(),
                 TextColumn::make('finished_at')
-                    ->label('Finished')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.finished'))
                     ->dateTime()
                     ->toggleable(),
                 TextColumn::make('type')
-                    ->label('Type')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.type'))
                     ->badge()
                     ->sortable(),
                 TextColumn::make('status')
-                    ->label('Status')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.status'))
                     ->badge()
                     ->color(fn(?string $state): string => match ($state) {
                         'success' => 'success',
@@ -73,44 +73,46 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                     })
                     ->sortable(),
                 TextColumn::make('duration')
-                    ->label('Duration')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.duration'))
                     ->state(fn(BackupRun $record): ?string => $this->formatDuration($record))
                     ->toggleable(),
                 TextColumn::make('meta.trigger')
-                    ->label('Trigger')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.trigger'))
                     ->toggleable(),
                 TextColumn::make('meta.tags')
-                    ->label('Tags')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.tags'))
                     ->listWithLineBreaks()
                     ->limitList(3)
                     ->expandableLimitedList()
                     ->toggleable(),
                 TextColumn::make('meta.backup.exit_code')
-                    ->label('Exit')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.exit_code'))
                     ->toggleable(),
             ])
             ->filters([
                 SelectFilter::make('status')
+                    ->label(__('restic-backups::backups.pages.runs.table.filters.status'))
                     ->options([
-                        'running' => 'Running',
-                        'success' => 'Success',
-                        'failed' => 'Failed',
-                        'skipped' => 'Skipped',
+                        'running' => __('restic-backups::backups.pages.runs.table.filters.status_options.running'),
+                        'success' => __('restic-backups::backups.pages.runs.table.filters.status_options.success'),
+                        'failed' => __('restic-backups::backups.pages.runs.table.filters.status_options.failed'),
+                        'skipped' => __('restic-backups::backups.pages.runs.table.filters.status_options.skipped'),
                     ]),
                 SelectFilter::make('type')
+                    ->label(__('restic-backups::backups.pages.runs.table.filters.type'))
                     ->options([
-                        'backup' => 'Backup',
-                        'check' => 'Check',
-                        'forget' => 'Retention',
-                        'forget_snapshot' => 'Delete snapshot',
-                        'restore' => 'Restore',
-                        'export_snapshot' => 'Export snapshot',
+                        'backup' => __('restic-backups::backups.pages.runs.table.filters.type_options.backup'),
+                        'check' => __('restic-backups::backups.pages.runs.table.filters.type_options.check'),
+                        'forget' => __('restic-backups::backups.pages.runs.table.filters.type_options.forget'),
+                        'forget_snapshot' => __('restic-backups::backups.pages.runs.table.filters.type_options.forget_snapshot'),
+                        'restore' => __('restic-backups::backups.pages.runs.table.filters.type_options.restore'),
+                        'export_snapshot' => __('restic-backups::backups.pages.runs.table.filters.type_options.export_snapshot'),
                     ]),
                 Filter::make('started_at')
-                    ->label('Started date')
+                    ->label(__('restic-backups::backups.pages.runs.table.filters.started_at'))
                     ->schema(schema: [
-                        DatePicker::make('from')->label('From'),
-                        DatePicker::make('until')->label('Until'),
+                        DatePicker::make('from')->label(__('restic-backups::backups.pages.runs.table.filters.from')),
+                        DatePicker::make('until')->label(__('restic-backups::backups.pages.runs.table.filters.until')),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
@@ -126,15 +128,15 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
             ])
             ->recordActions([
                 Action::make('view')
-                    ->label('View')
+                    ->label(__('restic-backups::backups.pages.runs.actions.view.label'))
                     ->icon('heroicon-o-eye')
-                    ->modalHeading('Backup run details')
+                    ->modalHeading(__('restic-backups::backups.pages.runs.actions.view.modal_heading'))
                     ->modalSubmitAction(false)
                     ->modalContent(fn(BackupRun $record) => view('restic-backups::runs.view', [
                         'record' => $record,
                     ])),
                 Action::make('download')
-                    ->label('Download')
+                    ->label(__('restic-backups::backups.pages.runs.actions.download.label'))
                     ->icon('heroicon-o-arrow-down-tray')
                     ->visible(function (BackupRun $record): bool {
                         if ($record->type !== 'export_snapshot' || $record->status !== 'success') {
@@ -181,19 +183,27 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
         $seconds = (int) round($seconds);
 
         if ($seconds < 60) {
-            return $seconds . 's';
+            return __('restic-backups::backups.pages.runs.duration.seconds', [
+                'seconds' => $seconds,
+            ]);
         }
 
         $minutes = intdiv($seconds, 60);
         $remainingSeconds = $seconds % 60;
 
         if ($minutes < 60) {
-            return sprintf('%dm %ds', $minutes, $remainingSeconds);
+            return __('restic-backups::backups.pages.runs.duration.minutes', [
+                'minutes' => $minutes,
+                'seconds' => $remainingSeconds,
+            ]);
         }
 
         $hours = intdiv($minutes, 60);
         $remainingMinutes = $minutes % 60;
 
-        return sprintf('%dh %dm', $hours, $remainingMinutes);
+        return __('restic-backups::backups.pages.runs.duration.hours', [
+            'hours' => $hours,
+            'minutes' => $remainingMinutes,
+        ]);
     }
 }

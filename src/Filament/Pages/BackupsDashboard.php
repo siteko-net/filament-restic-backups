@@ -52,28 +52,32 @@ class BackupsDashboard extends BaseBackupsPage
             ->components([
                 ActionsComponent::make([
                     Action::make('runBackup')
-                        ->label('Run backup now')
+                        ->label(__('restic-backups::backups.pages.dashboard.actions.run_backup.label'))
                         ->icon('heroicon-o-play')
                         ->requiresConfirmation()
-                        ->modalHeading('Run backup now')
-                        ->modalDescription('This will start a backup job in the queue.')
+                        ->modalHeading(__('restic-backups::backups.pages.dashboard.actions.run_backup.modal_heading'))
+                        ->modalDescription(__('restic-backups::backups.pages.dashboard.actions.run_backup.modal_description'))
                         ->action(function (): void {
                             $lockInfo = app(OperationLock::class)->getInfo();
 
                             if (is_array($lockInfo)) {
-                                $message = 'Another operation is running.';
+                                $message = __('restic-backups::backups.pages.dashboard.notifications.operation_running');
 
                                 if (! empty($lockInfo['type'])) {
-                                    $message .= ' Type: ' . $lockInfo['type'] . '.';
+                                    $message .= ' ' . __('restic-backups::backups.pages.dashboard.notifications.operation_running_type', [
+                                        'type' => $lockInfo['type'],
+                                    ]);
                                 }
 
                                 if (! empty($lockInfo['run_id'])) {
-                                    $message .= ' Run ID: ' . $lockInfo['run_id'] . '.';
+                                    $message .= ' ' . __('restic-backups::backups.pages.dashboard.notifications.operation_running_run_id', [
+                                        'run_id' => $lockInfo['run_id'],
+                                    ]);
                                 }
 
                                 Notification::make()
-                                    ->title('Operation in progress')
-                                    ->body($message . ' Backup will wait in queue.')
+                                    ->title(__('restic-backups::backups.pages.dashboard.notifications.operation_in_progress'))
+                                    ->body($message . ' ' . __('restic-backups::backups.pages.dashboard.notifications.backup_waits'))
                                     ->warning()
                                     ->send();
                             }
@@ -82,20 +86,20 @@ class BackupsDashboard extends BaseBackupsPage
 
                             Notification::make()
                                 ->success()
-                                ->title('Backup queued')
-                                ->body('Backup job has been queued and will run in background.')
+                                ->title(__('restic-backups::backups.pages.dashboard.notifications.backup_queued'))
+                                ->body(__('restic-backups::backups.pages.dashboard.notifications.backup_queued_body'))
                                 ->send();
                         }),
                     Action::make('openRuns')
-                        ->label('Open Runs')
+                        ->label(__('restic-backups::backups.pages.dashboard.actions.open_runs'))
                         ->icon('heroicon-o-list-bullet')
                         ->url(BackupsRuns::getUrl()),
                     Action::make('openSnapshots')
-                        ->label('Open Snapshots')
+                        ->label(__('restic-backups::backups.pages.dashboard.actions.open_snapshots'))
                         ->icon('heroicon-o-rectangle-stack')
                         ->url(BackupsSnapshots::getUrl()),
                     Action::make('openSettings')
-                        ->label('Open Settings')
+                        ->label(__('restic-backups::backups.pages.dashboard.actions.open_settings'))
                         ->icon('heroicon-o-cog-6-tooth')
                         ->url(BackupsSettings::getUrl()),
                 ]),
@@ -113,7 +117,7 @@ class BackupsDashboard extends BaseBackupsPage
     {
         return [
             Action::make('refresh')
-                ->label('Refresh')
+                ->label(__('restic-backups::backups.pages.dashboard.header_actions.refresh'))
                 ->icon('heroicon-o-arrow-path')
                 ->action('refreshOverview'),
         ];
