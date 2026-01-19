@@ -74,7 +74,13 @@ class ResticBackupsPlugin implements Plugin
 
     protected function getNavigationGroupLabel(): string
     {
-        return config('restic-backups.navigation.group_label', 'Backups');
+        $label = config('restic-backups.navigation.group_label');
+
+        if (is_string($label) && trim($label) !== '') {
+            return $label;
+        }
+
+        return __('restic-backups::backups.navigation.group');
     }
 
     protected function getNavigationGroupIcon(): string

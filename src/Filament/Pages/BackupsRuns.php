@@ -16,6 +16,7 @@ use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\Builder;
 use Siteko\FilamentResticBackups\Models\BackupRun;
+use Illuminate\Support\Facades\URL;
 
 class BackupsRuns extends BaseBackupsPage implements HasTable
 {
@@ -32,10 +33,20 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
         return static::baseNavigationSort() + 3;
     }
 
+    public static function getNavigationLabel(): string
+    {
+        return __('restic-backups::backups.pages.runs.navigation_label');
+    }
+
+    public function getTitle(): string
+    {
+        return __('restic-backups::backups.pages.runs.title');
+    }
+
     public function table(Table $table): Table
     {
         return $table
-            ->query(fn (): Builder => BackupRun::query())
+            ->query(fn(): Builder => BackupRun::query())
             ->defaultSort('started_at', 'desc')
             ->columns([
                 TextColumn::make('started_at')
@@ -53,7 +64,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                 TextColumn::make('status')
                     ->label('Status')
                     ->badge()
-                    ->color(fn (?string $state): string => match ($state) {
+                    ->color(fn(?string $state): string => match ($state) {
                         'success' => 'success',
                         'failed' => 'danger',
                         'running' => 'warning',
@@ -63,7 +74,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                     ->sortable(),
                 TextColumn::make('duration')
                     ->label('Duration')
-                    ->state(fn (BackupRun $record): ?string => $this->formatDuration($record))
+                    ->state(fn(BackupRun $record): ?string => $this->formatDuration($record))
                     ->toggleable(),
                 TextColumn::make('meta.trigger')
                     ->label('Trigger')
@@ -93,10 +104,11 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                         'forget' => 'Retention',
                         'forget_snapshot' => 'Delete snapshot',
                         'restore' => 'Restore',
+                        'export_snapshot' => 'Export snapshot',
                     ]),
                 Filter::make('started_at')
                     ->label('Started date')
-                    ->form([
+                    ->schema(schema: [
                         DatePicker::make('from')->label('From'),
                         DatePicker::make('until')->label('Until'),
                     ])
@@ -104,23 +116,44 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                         return $query
                             ->when(
                                 $data['from'] ?? null,
-                                fn (Builder $query, string $date): Builder => $query->whereDate('started_at', '>=', $date),
+                                fn(Builder $query, string $date): Builder => $query->whereDate('started_at', '>=', $date),
                             )
                             ->when(
                                 $data['until'] ?? null,
-                                fn (Builder $query, string $date): Builder => $query->whereDate('started_at', '<=', $date),
+                                fn(Builder $query, string $date): Builder => $query->whereDate('started_at', '<=', $date),
                             );
                     }),
             ])
-            ->actions([
+            ->recordActions([
                 Action::make('view')
                     ->label('View')
                     ->icon('heroicon-o-eye')
                     ->modalHeading('Backup run details')
                     ->modalSubmitAction(false)
-                    ->modalContent(fn (BackupRun $record) => view('restic-backups::runs.view', [
+                    ->modalContent(fn(BackupRun $record) => view('restic-backups::runs.view', [
                         'record' => $record,
                     ])),
+                Action::make('download')
+                    ->label('Download')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->visible(function (BackupRun $record): bool {
+                        if ($record->type !== 'export_snapshot' || $record->status !== 'success') {
+                            return false;
+                        }
+
+                        $meta = is_array($record->meta) ? $record->meta : [];
+                        $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+
+                        return ! empty($export['archive_path']) && ! empty($export['archive_name']);
+                    })
+                    ->url(function (BackupRun $record): string {
+                        return URL::temporarySignedRoute(
+                            'restic-backups.exports.download',
+                            now()->addMinutes(60),
+                            ['run' => $record->getKey()],
+                        );
+                    })
+                    ->openUrlInNewTab(),
             ]);
     }
 

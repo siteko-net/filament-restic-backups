@@ -9,7 +9,13 @@ abstract class BaseBackupsPage extends Page
 {
     public static function getNavigationGroup(): ?string
     {
-        return config('restic-backups.navigation.group_label', 'Backups');
+        $label = config('restic-backups.navigation.group_label');
+
+        if (is_string($label) && trim($label) !== '') {
+            return $label;
+        }
+
+        return __('restic-backups::backups.navigation.group');
     }
 
     public static function canAccess(): bool

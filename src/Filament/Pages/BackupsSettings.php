@@ -85,6 +85,16 @@ class BackupsSettings extends BaseBackupsPage
         return static::baseNavigationSort() + 1;
     }
 
+    public static function getNavigationLabel(): string
+    {
+        return __('restic-backups::backups.pages.settings.navigation_label');
+    }
+
+    public function getTitle(): string
+    {
+        return __('restic-backups::backups.pages.settings.title');
+    }
+
     public function mount(): void
     {
         $this->record = BackupSetting::singleton();
@@ -238,13 +248,13 @@ class BackupsSettings extends BaseBackupsPage
                 Section::make('Repository status')
                     ->columns(1)
                     ->schema([
-                        SchemaText::make(fn (): string => 'Status: ' . $this->repositoryStatusLabel())
-                            ->color(fn (): string => $this->repositoryStatusColor()),
-                        SchemaText::make(fn (): string => $this->repositoryStatusMessage())
-                            ->color(fn (): string => $this->repositoryStatusColor())
-                            ->visible(fn (): bool => $this->repositoryStatusMessage() !== ''),
-                        SchemaText::make(fn (): string => 'Snapshots: ' . (string) ($this->repositoryStatus['snapshots_count'] ?? 'n/a'))
-                            ->visible(fn (): bool => ($this->repositoryStatus['status'] ?? null) === 'ok'),
+                        SchemaText::make(fn(): string => 'Status: ' . $this->repositoryStatusLabel())
+                            ->color(fn(): string => $this->repositoryStatusColor()),
+                        SchemaText::make(fn(): string => $this->repositoryStatusMessage())
+                            ->color(fn(): string => $this->repositoryStatusColor())
+                            ->visible(fn(): bool => $this->repositoryStatusMessage() !== ''),
+                        SchemaText::make(fn(): string => 'Snapshots: ' . (string) ($this->repositoryStatus['snapshots_count'] ?? 'n/a'))
+                            ->visible(fn(): bool => ($this->repositoryStatus['status'] ?? null) === 'ok'),
                         Actions::make([
                             Action::make('refreshRepositoryStatus')
                                 ->label('Refresh status')
@@ -260,9 +270,9 @@ class BackupsSettings extends BaseBackupsPage
                                         ->label('Type INIT to confirm')
                                         ->required(),
                                 ])
-                                ->visible(fn (): bool => ($this->repositoryStatus['status'] ?? null) === 'not_initialized')
-                                ->disabled(fn (): bool => ! $this->hasRepositoryConfig($this->record))
-                                ->action(fn (array $data) => $this->initRepository($data)),
+                                ->visible(fn(): bool => ($this->repositoryStatus['status'] ?? null) === 'not_initialized')
+                                ->disabled(fn(): bool => ! $this->hasRepositoryConfig($this->record))
+                                ->action(fn(array $data) => $this->initRepository($data)),
                         ]),
                     ]),
                 Section::make('Storage (S3)')
@@ -276,11 +286,11 @@ class BackupsSettings extends BaseBackupsPage
                             ->nullable(),
                         Select::make('bucket_select')
                             ->label('Bucket')
-                            ->options(fn (): array => array_combine($this->bucketOptions, $this->bucketOptions))
+                            ->options(fn(): array => array_combine($this->bucketOptions, $this->bucketOptions))
                             ->searchable()
                             ->placeholder('Refresh to load buckets')
-                            ->default(fn (): ?string => $this->data['bucket'] ?? null)
-                            ->visible(fn (): bool => $this->bucketOptions !== [])
+                            ->default(fn(): ?string => $this->data['bucket'] ?? null)
+                            ->visible(fn(): bool => $this->bucketOptions !== [])
                             ->dehydrated(false)
                             ->live()
                             ->afterStateUpdated(function (Set $set, ?string $state): void {
@@ -293,7 +303,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->rule('regex:/^\\S+$/')
                             ->placeholder('Enter bucket name')
                             ->helperText('Enter manually if listing is not available.')
-                            ->visible(fn (): bool => $this->bucketManual || $this->bucketOptions === [])
+                            ->visible(fn(): bool => $this->bucketManual || $this->bucketOptions === [])
                             ->nullable(),
                         Actions::make([
                             Action::make('refreshBuckets')
@@ -301,14 +311,14 @@ class BackupsSettings extends BaseBackupsPage
                                 ->icon('heroicon-o-arrow-path')
                                 ->action('refreshBuckets'),
                         ]),
-                        SchemaText::make(fn (): string => (string) ($this->bucketLoadError ?? ''))
+                        SchemaText::make(fn(): string => (string) ($this->bucketLoadError ?? ''))
                             ->color('danger')
-                            ->visible(fn (): bool => $this->bucketLoadError !== null),
+                            ->visible(fn(): bool => $this->bucketLoadError !== null),
                         TextInput::make('access_key')
                             ->label('Access key')
                             ->password()
                             ->placeholder('******')
-                            ->dehydrated(fn (string | null $state): bool => filled($state))
+                            ->dehydrated(fn(string | null $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
@@ -316,7 +326,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->label('Secret key')
                             ->password()
                             ->placeholder('******')
-                            ->dehydrated(fn (string | null $state): bool => filled($state))
+                            ->dehydrated(fn(string | null $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
@@ -338,7 +348,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->label('Repository password')
                             ->password()
                             ->placeholder('******')
-                            ->dehydrated(fn (string | null $state): bool => filled($state))
+                            ->dehydrated(fn(string | null $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
@@ -625,7 +635,7 @@ class BackupsSettings extends BaseBackupsPage
         $this->repositoryStatus = Cache::remember(
             self::REPO_STATUS_CACHE_KEY,
             self::REPO_STATUS_CACHE_TTL,
-            fn (): array => $this->determineRepositoryStatus(),
+            fn(): array => $this->determineRepositoryStatus(),
         );
     }
 
@@ -839,11 +849,13 @@ class BackupsSettings extends BaseBackupsPage
         }
 
         if ($settings instanceof BackupSetting) {
-            foreach ([
-                $this->normalizeScalar($settings->access_key),
-                $this->normalizeScalar($settings->secret_key),
-                $this->normalizeScalar($settings->restic_password),
-            ] as $secret) {
+            foreach (
+                [
+                    $this->normalizeScalar($settings->access_key),
+                    $this->normalizeScalar($settings->secret_key),
+                    $this->normalizeScalar($settings->restic_password),
+                ] as $secret
+            ) {
                 if ($secret === null || $secret === '') {
                     continue;
                 }

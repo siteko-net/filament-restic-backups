@@ -35,6 +35,7 @@ use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
+use Siteko\FilamentResticBackups\Jobs\ExportSnapshotArchiveJob;
 use Throwable;
 
 class BackupsSnapshots extends BaseBackupsPage implements HasTable
@@ -75,6 +76,16 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         return static::baseNavigationSort() + 2;
     }
 
+    public static function getNavigationLabel(): string
+    {
+        return __('restic-backups::backups.pages.snapshots.navigation_label');
+    }
+
+    public function getTitle(): string
+    {
+        return __('restic-backups::backups.pages.snapshots.title');
+    }
+
     public function mount(): void
     {
         $this->loadSnapshots();
@@ -89,7 +100,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     public function table(Table $table): Table
     {
         return $table
-            ->records(fn (
+            ->records(fn(
                 array $filters = [],
                 int | string $page = 1,
                 int | string $recordsPerPage = 25,
@@ -107,8 +118,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 TextColumn::make('short_id')
                     ->label('ID')
                     ->copyable()
-                    ->copyableState(fn (array $record): string => (string) ($record['id'] ?? $record['short_id'] ?? ''))
-                    ->tooltip(fn (array $record): ?string => $record['id'] ?? null)
+                    ->copyableState(fn(array $record): string => (string) ($record['id'] ?? $record['short_id'] ?? ''))
+                    ->tooltip(fn(array $record): ?string => $record['id'] ?? null)
                     ->toggleable(),
                 TextColumn::make('time')
                     ->label('Time')
@@ -120,7 +131,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->toggleable(),
                 TextColumn::make('tags')
                     ->label('Tags')
-                    ->state(fn (array $record): array => $record['tags'] ?? [])
+                    ->state(fn(array $record): array => $record['tags'] ?? [])
                     ->badge()
                     ->listWithLineBreaks()
                     ->limitList(3)
@@ -128,35 +139,35 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->toggleable(),
                 TextColumn::make('paths_summary')
                     ->label('Paths')
-                    ->state(fn (array $record): string => $this->formatPathsSummary($record['paths'] ?? []))
-                    ->tooltip(fn (array $record): ?string => $this->formatPathsTooltip($record['paths'] ?? []))
+                    ->state(fn(array $record): string => $this->formatPathsSummary($record['paths'] ?? []))
+                    ->tooltip(fn(array $record): ?string => $this->formatPathsTooltip($record['paths'] ?? []))
                     ->toggleable(),
             ])
             ->filters([
                 SelectFilter::make('tag')
                     ->label('Tag')
-                    ->options(fn (): array => $this->getTagOptions())
+                    ->options(fn(): array => $this->getTagOptions())
                     ->searchable(),
                 SelectFilter::make('host')
                     ->label('Host')
-                    ->options(fn (): array => $this->getHostOptions())
+                    ->options(fn(): array => $this->getHostOptions())
                     ->searchable(),
                 Filter::make('time')
                     ->label('Date range')
-                    ->form([
+                    ->schema([
                         DatePicker::make('from')->label('From'),
                         DatePicker::make('until')->label('Until'),
                     ]),
             ])
-            ->actions([
+            ->pushRecordActions([
                 Action::make('delete')
                     ->label('Delete')
                     ->icon('heroicon-o-trash')
                     ->color('danger')
                     ->modalHeading('Delete snapshot')
                     ->modalDescription('This will remove the snapshot from the repository. Prune may take some time.')
-                    ->disabled(fn (): bool => $this->snapshotError !== null)
-                    ->form(function (array $record): array {
+                    ->disabled(fn(): bool => $this->snapshotError !== null)
+                    ->schema(function (array $record): array {
                         $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
                         $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
 
@@ -227,9 +238,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->modalHeading('Restore snapshot')
                     ->modalSubmitActionLabel('Queue restore')
                     ->modalSubmitAction(function (Action $action): Action {
-                        return $action->disabled(fn (): bool => ! $this->restorePreflightOk);
+                        return $action->disabled(fn(): bool => ! $this->restorePreflightOk);
                     })
-                    ->steps(fn (array $record): array => $this->buildRestoreSteps($record))
+                    ->steps(fn(array $record): array => $this->buildRestoreSteps($record))
                     ->action(function (array $data, array $record): void {
                         $scope = $this->normalizeRestoreScope((string) ($data['scope'] ?? 'files'));
                         $mode = $scope === 'db'
@@ -308,12 +319,70 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             ->success()
                             ->send();
                     }),
+                Action::make('export_archive')
+                    ->label('Download archive...')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->modalHeading('Download snapshot as archive')
+                    ->modalDescription('Creates an archive on the server (restic restore + tar.gz). Then you can download it from Runs.')
+                    ->disabled(fn(): bool => $this->snapshotError !== null)
+                    ->form([
+                        Toggle::make('include_env')
+                            ->label('Include .env (unsafe)')
+                            ->helperText('Disabled by default for security. Enable only if you really need it.')
+                            ->default(false),
+                        TextInput::make('keep_hours')
+                            ->label('Keep archive (hours)')
+                            ->numeric()
+                            ->minValue(1)
+                            ->maxValue(168)
+                            ->default(24)
+                            ->required(),
+                    ])
+                    ->action(function (array $data, array $record): void {
+                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
+
+                        if ($snapshotId === '') {
+                            Notification::make()
+                                ->title('Snapshot ID missing')
+                                ->body('Unable to determine snapshot ID for export.')
+                                ->danger()
+                                ->send();
+
+                            throw new Halt();
+                        }
+
+                        $includeEnv = (bool) ($data['include_env'] ?? false);
+                        $keepHours = (int) ($data['keep_hours'] ?? 24);
+
+                        $lockInfo = app(OperationLock::class)->getInfo();
+                        if (is_array($lockInfo)) {
+                            Notification::make()
+                                ->title('Operation in progress')
+                                ->body('Another operation is running. Export will wait in queue.')
+                                ->warning()
+                                ->send();
+                        }
+
+                        ExportSnapshotArchiveJob::dispatch(
+                            $snapshotId,
+                            $includeEnv,
+                            $keepHours,
+                            auth()->id(),
+                            'filament',
+                        );
+
+                        Notification::make()
+                            ->title('Export queued')
+                            ->body('Archive export job queued. Open Runs to download when it finishes.')
+                            ->success()
+                            ->send();
+                    }),
                 Action::make('details')
                     ->label('Details')
                     ->icon('heroicon-o-document-text')
                     ->modalHeading('Snapshot details')
                     ->modalSubmitAction(false)
-                    ->modalContent(fn (array $record) => view('restic-backups::snapshots.details', [
+                    ->modalContent(fn(array $record) => view('restic-backups::snapshots.details', [
                         'record' => $record,
                     ])),
             ])
@@ -332,15 +401,15 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             $components[] = Section::make('Operation in progress')
                 ->description('Another backup/restore operation is currently running.')
                 ->schema([
-                    Text::make(fn (): string => 'Type: ' . ($lockInfo['type'] ?? 'n/a')),
-                    Text::make(fn (): string => 'Run ID: ' . (string) ($lockInfo['run_id'] ?? 'n/a')),
-                    Text::make(fn (): string => 'Started: ' . ($lockInfo['started_at'] ?? 'n/a')),
-                    Text::make(fn (): string => 'Heartbeat: ' . ($lockInfo['last_heartbeat_at'] ?? 'n/a')),
-                    Text::make(fn (): string => 'Host: ' . ($lockInfo['hostname'] ?? 'n/a')),
-                    Text::make(fn (): string => 'Step: ' . ($context['step'] ?? 'n/a')),
+                    Text::make(fn(): string => 'Type: ' . ($lockInfo['type'] ?? 'n/a')),
+                    Text::make(fn(): string => 'Run ID: ' . (string) ($lockInfo['run_id'] ?? 'n/a')),
+                    Text::make(fn(): string => 'Started: ' . ($lockInfo['started_at'] ?? 'n/a')),
+                    Text::make(fn(): string => 'Heartbeat: ' . ($lockInfo['last_heartbeat_at'] ?? 'n/a')),
+                    Text::make(fn(): string => 'Host: ' . ($lockInfo['hostname'] ?? 'n/a')),
+                    Text::make(fn(): string => 'Step: ' . ($context['step'] ?? 'n/a')),
                     Text::make('Warning: lock heartbeat is stale.')
                         ->color('danger')
-                        ->visible(fn (): bool => $lockStale),
+                        ->visible(fn(): bool => $lockStale),
                 ]);
         }
 
@@ -348,9 +417,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             $components[] = Section::make('Repository issue')
                 ->description('Unable to load snapshots from restic.')
                 ->schema([
-                    Text::make(fn (): string => $this->snapshotError ?? 'Unknown error')
+                    Text::make(fn(): string => $this->snapshotError ?? 'Unknown error')
                         ->color('danger'),
-                    Text::make(fn (): string => $this->snapshotErrorDetails ?? '')
+                    Text::make(fn(): string => $this->snapshotErrorDetails ?? '')
                         ->color('gray'),
                     ActionsComponent::make([
                         Action::make('openSettings')
@@ -400,7 +469,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         $tag = $filters['tag']['value'] ?? null;
         if (is_string($tag) && $tag !== '') {
-            $records = $records->filter(fn (array $record): bool => in_array($tag, $record['tags'] ?? [], true));
+            $records = $records->filter(fn(array $record): bool => in_array($tag, $record['tags'] ?? [], true));
         }
 
         $host = $filters['host']['value'] ?? null;
@@ -419,14 +488,14 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         if ($from) {
             $fromTimestamp = $this->parseDateToTimestamp($from, 'start');
             if ($fromTimestamp !== null) {
-                $records = $records->filter(fn (array $record): bool => ($record['time_unix'] ?? 0) >= $fromTimestamp);
+                $records = $records->filter(fn(array $record): bool => ($record['time_unix'] ?? 0) >= $fromTimestamp);
             }
         }
 
         if ($until) {
             $untilTimestamp = $this->parseDateToTimestamp($until, 'end');
             if ($untilTimestamp !== null) {
-                $records = $records->filter(fn (array $record): bool => ($record['time_unix'] ?? 0) <= $untilTimestamp);
+                $records = $records->filter(fn(array $record): bool => ($record['time_unix'] ?? 0) <= $untilTimestamp);
             }
         }
 
@@ -434,7 +503,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $descending = $sortDirection !== 'asc';
 
         $records = $records->sortBy(
-            fn (array $record) => $this->resolveSortValue($record, $sortColumn),
+            fn(array $record) => $this->resolveSortValue($record, $sortColumn),
             SORT_REGULAR,
             $descending,
         );
@@ -591,7 +660,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
     protected function formatPathsSummary(array $paths): string
     {
-        $paths = array_values(array_filter($paths, fn (string $path): bool => trim($path) !== ''));
+        $paths = array_values(array_filter($paths, fn(string $path): bool => trim($path) !== ''));
 
         if ($paths === []) {
             return '—';
@@ -609,7 +678,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
     protected function formatPathsTooltip(array $paths): ?string
     {
-        $paths = array_values(array_filter($paths, fn (string $path): bool => trim($path) !== ''));
+        $paths = array_values(array_filter($paths, fn(string $path): bool => trim($path) !== ''));
 
         if ($paths === []) {
             return null;
@@ -731,7 +800,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     TextInput::make('confirmation_phrase')
                         ->label('Confirmation phrase')
                         ->disabled()
-                        ->dehydrated(fn (): bool => true)
+                        ->dehydrated(fn(): bool => true)
                         ->default(function (Get $get) use ($record): string {
                             $scope = $this->normalizeRestoreScope((string) ($get('scope') ?? 'files'));
 
@@ -1075,12 +1144,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $tags = collect($this->snapshotRecords ?? [])
             ->pluck('tags')
             ->flatten()
-            ->filter(fn (?string $tag): bool => is_string($tag) && $tag !== '')
+            ->filter(fn(?string $tag): bool => is_string($tag) && $tag !== '')
             ->unique()
             ->sort()
             ->values();
 
-        return $tags->mapWithKeys(fn (string $tag): array => [$tag => $tag])->all();
+        return $tags->mapWithKeys(fn(string $tag): array => [$tag => $tag])->all();
     }
 
     /**
@@ -1092,12 +1161,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         $hosts = collect($this->snapshotRecords ?? [])
             ->pluck('hostname')
-            ->filter(fn (?string $host): bool => is_string($host) && $host !== '')
+            ->filter(fn(?string $host): bool => is_string($host) && $host !== '')
             ->unique()
             ->sort()
             ->values();
 
-        return $hosts->mapWithKeys(fn (string $host): array => [$host => $host])->all();
+        return $hosts->mapWithKeys(fn(string $host): array => [$host => $host])->all();
     }
 
     protected function resolveSortValue(array $record, string $column): mixed

@@ -26,9 +26,19 @@ class BackupsDashboard extends BaseBackupsPage
 
     protected static ?string $title = 'Backups';
 
+
     public static function getNavigationSort(): ?int
     {
         return static::baseNavigationSort();
+    }
+    public static function getNavigationLabel(): string
+    {
+        return __('restic-backups::backups.pages.dashboard.navigation_label');
+    }
+
+    public function getTitle(): string
+    {
+        return __('restic-backups::backups.pages.dashboard.title');
     }
 
     public function mount(): void

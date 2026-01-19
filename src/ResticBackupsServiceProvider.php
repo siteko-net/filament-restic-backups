@@ -17,6 +17,7 @@ class ResticBackupsServiceProvider extends ServiceProvider
         $this->registerViews();
         $this->registerTranslations();
         $this->registerCommands();
+        $this->registerRoutes();
     }
 
     protected function registerPublishing(): void
@@ -36,6 +37,9 @@ class ResticBackupsServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__ . '/../database/seeders' => database_path('seeders'),
         ], 'restic-backups-seeders');
+        $this->publishes([
+            __DIR__ . '/../resources/lang' => lang_path('vendor/restic-backups'),
+        ], 'restic-backups-translations');
     }
 
     protected function registerViews(): void
@@ -59,5 +63,9 @@ class ResticBackupsServiceProvider extends ServiceProvider
             \Siteko\FilamentResticBackups\Console\CleanupRollbackDirsCommand::class,
             \Siteko\FilamentResticBackups\Console\UnlockOperationCommand::class,
         ]);
+    }
+    protected function registerRoutes(): void
+    {
+        $this->loadRoutesFrom(__DIR__ . '/../routes/web.php');
     }
 }

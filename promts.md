@@ -2407,370 +2407,1265 @@ Restic snapshot содержит файлы проекта. Восстановл
 
 ------
 
+Ниже — **PROMPT 9** в стиле вашего `promts.md`: “DB-only restore” **без staging всего проекта**, через `restic dump` (или `restore --include` как fallback), с совместимостью с текущим путём дампа `storage/app/_backup/db.sql.gz` и текущими тегами/снапшотами.
 
+## PROMPT 8 — Filament “Backups → Overview” (Dashboard) + краткое здоровье системы
 
-## PROMPT (Шаг 8) — Notifications + Healthchecks + Scheduling (daily backup, weekly restic check)
+### Цель
 
-Ты — senior Laravel 12 / PHP 8.4 / Filament 4 инженер. В пакете `siteko/filament-restic-backups` (в `packages/siteko/restic-backups`) уже реализованы шаги 1–7:
+Реализовать страницу **Backups → Overview** (Filament page `BackupsDashboard`) вместо текущего `TODO`, чтобы админ сразу видел:
 
-- Settings (`BackupSetting` singleton, encrypted casts для секретов)
-- Runner (`ResticRunner`)
-- Jobs: `RunBackupJob`, `RunRestoreJob` (+ возможно `RunCheckJob` если уже есть)
-- Filament UI: Settings / Runs / Snapshots + Restore wizard (реальный)
-- Runs логируются в таблицу `backup_runs` с `meta` (обрезка stdout/stderr, секреты не светятся)
+1. состояние репозитория restic (доступен/не инициализирован/ошибка),
+2. последние снапшоты (время/ID/теги/кол-во),
+3. последние запуски `backup`/`restore` (успех/ошибка/время/длительность),
+4. базовую диагностику (свободное место, активный lock, очередь),
+5. быстрые действия (Run backup, открыть Runs, открыть Snapshots, открыть Settings).
 
-Нужно реализовать **последний шаг**:
+### Важно (ограничения)
 
-1. **Уведомления** (Telegram и Email) о success/fail для backup/restore/check
-2. **Healthchecks ping** (start/success/fail)
-3. **Расписание**: daily backup и weekly restic check
-4. **Настройки** этих вещей в Filament Settings (в существующей странице Settings)
-
-------
-
-# 0) Общие правила (обязательные)
-
-- Уведомления/пинги **никогда не должны ломать основной job**. Если Telegram/Email/Healthchecks недоступны — job всё равно считается success/fail по основной операции, а ошибки уведомлений записываются как warning в `meta`.
-- Никаких секретов в логах/уведомлениях:
-  - не логировать AWS keys, restic password
-  - не логировать full repository URL, если есть риск кредов (в нашем случае обычно нет, но лучше не показывать)
-- Всё внешнее выполнение — через уже имеющиеся механизмы:
-  - Telegram/Healthchecks — через Laravel HTTP Client (`Http::...`) **или** Notifications, но без зависимостей, которые усложняют установку, если это не критично.
-- Для Filament secret-полей — тот же безопасный UX, что у `access_key/secret_key/restic_password`:
-  - не подставлять в форму текущее значение
-  - пустое значение при save не затирает
-  - новое значение сохраняется (encrypted cast)
+- **Никаких destructive-операций** (init repo / unlock / delete snapshots) — это в будущих промптах (у вас это планируется позже).
+- Минимизировать тяжёлые вызовы restic: **кэшировать** результаты на короткое время (например 30–60 сек), чтобы Overview не “подвешивал” панель.
+- Не выводить секреты ни в UI, ни в логах.
 
 ------
 
-# 1) Расширение схемы Settings (backup_settings)
+## Что есть сейчас (ориентиры в коде)
 
-## 1.1. Новые поля в БД
-
-Добавь миграцию “add notifications/healthchecks to backup_settings”, НЕ меняй прошлые миграции задним числом.
-
-Добавь в таблицу `backup_settings` следующие колонки:
-
-### Notifications (минимально гибко)
-
-- `notify_enabled` (boolean, default false)
-- `notify_on_success` (boolean, default false)
-- `notify_on_failure` (boolean, default true)
-- `notify_channels` (json, nullable) — например `["mail","telegram"]`
-- `notify_emails` (json, nullable) — массив email’ов
-
-### Telegram
-
-- `telegram_bot_token` (text, nullable) — **encrypted cast**
-- `telegram_chat_ids` (json, nullable) — массив chat_id (строки/числа)
-
-> Почему токен отдельным полем: чтобы шифровать легко и не играться с “частично зашифрованным json”.
-
-### Healthchecks
-
-- `healthchecks_enabled` (boolean, default false)
-- `healthchecks_backup_ping_url` (string/text, nullable)
-- `healthchecks_check_ping_url` (string/text, nullable)
-- `healthchecks_restore_ping_url` (string/text, nullable)
-
-Опционально (если хочешь поддержать start/fail отдельно):
-
-- `healthchecks_support_start_fail` (boolean default true)
-  и использовать `.../start`, `.../fail` по соглашению.
-  Но чтобы было максимально надёжно: можно хранить **только базовый ping URL**, а `/start` и `/fail` формировать автоматически, при этом дать возможность отключить эту фичу.
-
-### Scheduling
-
-- Ничего нового в БД не обязательно, если уже есть `schedule` json.
-- Но нужно расширить `schedule` схему:
-  - `schedule.enabled` (уже есть)
-  - `schedule.daily_time` (уже есть)
-  - `schedule.timezone` (добавить, default = `config('app.timezone')`)
-  - `schedule.weekly_check_day` (например `Sun`)
-  - `schedule.weekly_check_time` (например `03:00`)
-
-## 1.2. Модель `BackupSetting` casts/hiddens
-
-- Добавить casts:
-  - `notify_channels` => `array`
-  - `notify_emails` => `array`
-  - `telegram_bot_token` => `encrypted`
-  - `telegram_chat_ids` => `array`
-- Добавить в `$hidden`:
-  - `telegram_bot_token` (обязательно)
+- `BackupsDashboard` — заглушка `TODO`.
+- Есть `RunBackupCommand restic-backups:run`, который диспатчит `RunBackupJob` (async или sync). Это можно дергать из UI-кнопки “Run backup now”.
+- В restore есть “skipped” при невозможности взять lock (`reason: lock_unavailable`) — полезно подсвечивать на Overview как “почему не стартует”.
+- В Snapshots UI уже есть preflight-логика оценки места (restic stats restore-size / fallback du). Это можно переиспользовать концептуально, но на Overview сделать облегчённо (только free bytes).
 
 ------
 
-# 2) Filament UI: Settings (добавить секции)
+## План реализации (шаги)
 
-В существующей странице Backups Settings добавить секции:
+### Шаг 1. Сервис-агрегатор данных для Overview
 
-## 2.1. Notifications
+Создать класс, например:
 
-- Toggle: **Enable notifications**
-- Checkbox/Toggles:
-  - Notify on success
-  - Notify on failure
-- MultiSelect/CheckboxList Channels:
-  - Email
-  - Telegram
+- `src/Support/BackupsOverview.php` (или `src/Services/BackupsOverviewService.php`)
 
-### Email recipients
+Метод:
 
-- Repeater / TagsInput: список email адресов
-- Валидация email
+```php
+public function get(): array
+```
 
-### Telegram
+Возвращает структуру (пример):
 
-- `Bot token` — password input (не подставлять текущее значение; пустое = сохранить старое)
-- `Chat IDs` — TagsInput / Repeater (строки/числа)
-- Helper: “Create a bot via BotFather, use chat id from your chat/channel”
+```php
+[
+  'settings' => [
+    'configured' => bool,          // есть ли запись BackupSetting::singleton()
+    'schedule_enabled' => bool|null,
+    'project_root' => string|null,
+  ],
+  'repo' => [
+    'status' => 'ok'|'uninitialized'|'error',
+    'message' => string,
+    'snapshots_count' => int|null,
+    'last_snapshot' => [
+      'id' => string|null,
+      'short_id' => string|null,
+      'time' => string|null,
+      'tags' => array,
+    ],
+  ],
+  'runs' => [
+    'last_any' => BackupRun|null,
+    'last_backup' => BackupRun|null,
+    'last_restore' => BackupRun|null,
+    'last_failed' => BackupRun|null,
+  ],
+  'system' => [
+    'disk_free_bytes' => int|null,
+    'lock' => [
+      'likely_locked' => bool,
+      'note' => string|null,
+    ],
+  ],
+]
+```
 
-## 2.2. Healthchecks
+Реализация:
 
-- Toggle: Enable healthchecks ping
-- Inputs:
-  - Backup ping URL
-  - Check ping URL
-  - Restore ping URL
-- Helper: “We will ping /start before, base URL on success, and /fail on failure (if enabled)”
-- (Опционально) Toggle “Use /start and /fail endpoints” (если реализуешь)
+- `BackupSetting::singleton()` завернуть в try/catch, если настройки ещё не созданы — `configured=false`.
+- `repo.status`:
+  - попытаться вызвать “лёгкую” команду restic через `ResticRunner` (лучше всего snapshots `--json`, если уже используется в Snapshots page).
+  - если ошибка похожа на “unable to open config file / not a repository” → `uninitialized`
+  - иначе → `error` + короткое сообщение
+- `snapshots_count` и `last_snapshot`:
+  - распарсить JSON массива снапшотов, взять последний по времени (или первый, если restic уже сортирует).
+- `runs`:
+  - `BackupRun::latest('started_at')`
+  - отдельно `where type=backup/restore`
+- `system.disk_free_bytes`:
+  - `disk_free_space($projectRoot ?? base_path())`
+- `system.lock` (best effort):
+  - попытаться взять lock тем же ключом, что используют jobs. Если ключ вынести в константу — идеально.
+  - логика: `Cache::lock($key, 1)->get()` → если удалось взять и тут же `release()` → `likely_locked=false`, иначе `true`.
 
-## 2.3. Scheduling
+Кэширование:
 
-- Расширить существующую секцию schedule:
-  - enabled
-  - daily_time
-  - timezone
-  - weekly_check_day (Select Mon–Sun)
-  - weekly_check_time
-- Helper: напомнить, что для работы расписания нужен системный cron: `php artisan schedule:run` каждую минуту, и очередь должна быть запущена.
-
-## 2.4. Actions (очень полезно для проверки)
-
-Добавь 2 кнопки на Settings:
-
-1. **Send test notification**
-   - отправляет тестовое сообщение в выбранные каналы (если enabled)
-   - показывает Notification “sent/failed”
-   - ошибки не валят страницу, показываются пользователю (без секретов)
-2. **Ping healthchecks test**
-   - пингует backup ping URL (success ping)
-   - показывает результат (status code)
-
-------
-
-# 3) Уведомления: архитектура (не размазывать по job’ам)
-
-Сделай аккуратную структуру:
-
-## 3.1. Новый сервис `NotificationManager`
-
-Файл: `src/Services/NotificationManager.php`
-
-Методы:
-
-- `notifyRunFinished(BackupRun $run): void`
-  - решает, слать ли уведомление (enabled + success/fail flags + type filters)
-  - отправляет в выбранные каналы
-  - ошибки ловит и пишет в `$run->meta['notifications']['errors'][]`
-- `sendTestNotification(): void` (или принимает настройки)
-
-## 3.2. Формат сообщения (один стандарт)
-
-Сделай один “summary builder”, чтобы Telegram и Email были согласованы:
-
-В сообщении указывать:
-
-- App name / env
-- Run type: backup/restore/check
-- Status: success/failed
-- Started/finished + duration
-- Snapshot (для restore)
-- Краткая ошибка (если failed): step + error message (обрезать)
-- Ссылка/подсказка “See Filament → Backups → Runs” (без реального URL, если не знаешь домен)
-
-Не включать stdout целиком, только краткий stderr до 1000–2000 символов.
-
-### Telegram отправка
-
-Реализуй через Laravel Http Client к Bot API:
-
-- POST `https://api.telegram.org/bot{token}/sendMessage`
-- payload: `chat_id`, `text`, `disable_web_page_preview=true`
-- отправлять во все `chat_ids`
-
-Ошибки и rate limit не должны ломать job.
-
-### Email отправка
-
-Реализуй через Laravel Notifications или Mail:
-
-- простой Mailable/Notification на адреса из `notify_emails`
-- subject: `[Backups] <type> <status> <app/env>`
-- body: текст + краткая сводка meta
+- `Cache::remember('restic-backups:overview', 30, fn()=>...)`
+- Либо раздельно: snapshots кэш 30–60 сек, runs без кэша.
 
 ------
 
-# 4) Healthchecks ping: архитектура
+### Шаг 2. Реализовать UI в `BackupsDashboard`
 
-## 4.1. Новый сервис `HealthchecksClient`
+Заменить `Text::make('TODO')` на нормальную сетку/секции. Сейчас это `content(Schema $schema)` — туда и вставляем компоненты.
 
-Файл: `src/Services/HealthchecksClient.php`
+Пример структуры страницы:
 
-Методы:
+- **Section: Repository**
+  - Status badge: OK / Not initialized / Error
+  - Snapshots count
+  - Last snapshot: time, short_id, tags
+  - Action buttons:
+    - “Open Snapshots” → link на `BackupsSnapshots`
+    - “Open Settings” → link на `BackupsSettings`
+- **Section: Last runs**
+  - 3 карточки: Last backup / Last restore / Last failed
+  - В каждой: status, started_at, finished_at/duration, trigger (если есть в meta)
+  - Кнопка “Open Runs” → link на `BackupsRuns`
+- **Section: System**
+  - Free disk space (человекочитаемо)
+  - Lock indicator:
+    - если `likely_locked=true`: подсказка “Возможно, предыдущий restore/backup ещё выполняется или воркер умер, и lock не освободился”.
+    - если последний `skipped` с `reason=lock_unavailable` — показать это явно (прочитать meta).
+- **Header actions**
+  - “Run backup now”:
+    - диспатчить `RunBackupJob::dispatch([...], 'manual', null, true)` (по аналогии с командой).
+    - UI: показать Notification “Backup dispatched”
+  - (опционально) “Run backup sync” — только для dev, можно скрыть.
 
-- `pingStart(string $pingUrl, array $context = []): void`
-- `pingSuccess(string $pingUrl, array $context = []): void`
-- `pingFail(string $pingUrl, array $context = []): void`
+UX-детали:
+
+- Ошибки repo показывать коротко + совет “проверьте Settings / выполните init вручную”.
+- Не спамить огромными stderr: всё обрезать.
+
+------
+
+### Шаг 3. Переиспользуемые утилиты форматирования
+
+Добавить в сервис/хелпер:
+
+- `formatBytes(int $bytes): string`
+- `formatDuration(?Carbon $started, ?Carbon $finished): string`
+- `formatRunStatusBadge($status): ...`
+
+------
+
+### Шаг 4. Минимальные проверки/тесты (по возможности)
+
+Если тесты уже есть — добавить:
+
+- Unit: Overview service возвращает `configured=false`, если нет settings.
+- Unit: если ResticRunner кидает исключение “not a repository” → status `uninitialized`.
+- Feature/UI тесты можно не делать, если это тяжело — но хотя бы сервис.
+
+------
+
+## Acceptance criteria (что считается “готово”)
+
+1. Страница **Backups → Overview** больше не содержит `TODO` и показывает 3 блока: Repo / Runs / System.
+2. При недоступном или неинициализированном repo — админ видит понятный статус и подсказку, без падения страницы.
+3. Кнопка “Run backup now” диспатчит backup в очередь и показывает уведомление (без ошибок).
+4. Restic команды не выполняются на каждый рефреш без ограничений — есть кэш 30–60 сек.
+5. Никакие секреты не попадают в UI.
+
+------
+
+## Notes для реализатора
+
+- `BackupsDashboard` уже в навигации как `slug=backups`, label `Overview` — сохраняем.
+- Не трогать PROMPT 9 (DB-only restore оптимизация) — это следующий этап.
+- Lock-UX фикс (unlock button, stale-lock детектор, и т.п.) — **не делаем сейчас**, но Overview должен хотя бы **показывать симптом** (последний skipped + likely_locked).
+
+------
+
+Если хочешь — следующим сообщением я сделаю “скелет PR” (какие новые файлы/классы добавить и как аккуратно связать их с Filament Schema), но текущий PROMPT 8 уже самодостаточный для AI-реализатора.
+
+------
+
+## PROMPT 9 — DB-only restore без восстановления всего дерева (restic dump)
+
+### Цель
+
+Сейчас при restore из snapshot даже в режиме “только БД” пакет, скорее всего, делает `restic restore` всего snapshot в staging-директорию, а потом берёт оттуда файл дампа и импортирует. Это медленно и требует много места.
+
+Нужно оптимизировать: **если пользователь выбирает restore scope = `db`**, пакет должен:
+
+- **не восстанавливать файлы проекта** в staging,
+- **скачать только файл дампа БД** из snapshot,
+- выполнить безопасное восстановление БД (safety dump → wipe → import → post-ops),
+- не трогать `.env` и файлы проекта.
+
+### Основа restic (для реализации)
+
+- `restic dump [flags] snapshotID file` умеет извлечь файл из snapshot и записать его в `--target`. ([man.archlinux.org](https://man.archlinux.org/man/restic-dump.1.en))
+- `restic restore <snapshot> --target ... --include <path>` умеет восстановить только подмножество файлов (например, один файл). ([restic.readthedocs.io](https://restic.readthedocs.io/en/latest/050_restore.html?utm_source=chatgpt.com))
+
+------
+
+## Контекст в проекте
+
+- Дамп БД создаётся в проекте как: `storage/app/_backup/db.sql.gz` (внутри project root).
+- Snapshot restic содержит project root с этим файлом (как часть backup).
+- Restore v2 сейчас staged + atomic swap + preflight. Для `db`-restore swap файлов не нужен.
+
+------
+
+## Требования/ограничения
+
+1. Новая оптимизация применяется **только** для `scope = db` (DB-only).
+2. Для `scope = files` и `scope = both` поведение остаётся прежним (staging → swap и т.п.).
+3. Не раскрывать секреты (repo password, S3 keys, DB пароль) в логах/meta.
+4. Если “DB-only через dump” невозможен (не нашли файл дампа в snapshot) — сделать **прозрачный fallback** на текущий способ (staging restore), либо отказ с понятным сообщением (лучше fallback).
+
+------
+
+## Изменения в коде — пошагово
+
+### Шаг 1. Добавить поддержку `restic dump` в `ResticRunner`
+
+Добавить метод (или универсальный `run(['dump', ...])` если уже так делается), например:
+
+- `public function dump(string $snapshotId, string $filePath, string $targetPath, array $opts = []): ProcessResult`
+
+Команда:
+
+- `restic dump <snapshotId> <filePath> --target <targetPath>` ([man.archlinux.org](https://man.archlinux.org/man/restic-dump.1.en))
+  (Плюс стандартные env из настроек: `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`, S3 creds.)
+
+Логирование:
+
+- В meta писать “dump snapshotId + filePath + target basename”, без секретов.
+
+### Шаг 2. Определить “путь дампа внутри snapshot” (важно для совместимости)
+
+Нужно вычислять `dumpPathInSnapshot` для указанного snapshot.
+
+**Основной кандидат (как сейчас ожидается):**
+
+- `{$projectRoot}/storage/app/_backup/db.sql.gz`
+  Где `$projectRoot` — то же, что используется для backup.
+
+**Проблема:** в restic пути часто абсолютные (зависят от того, как делался backup). Поэтому нужен fallback.
+
+Сделать функцию:
+
+- `resolveDumpPathInSnapshot(string $snapshotId): ResolvedPathResult`
+
+Алгоритм:
+
+1. Попробовать “абсолютный” путь из настроек:
+   - `$candidate = rtrim($settings->project_root, '/').'/storage/app/_backup/db.sql.gz'`
+2. Проверить существование файла в snapshot *лёгкой командой*, прежде чем dump:
+   - Вариант A (предпочтительно): `restic ls <snapshotId> --long <candidate>` (или `--json`) и убедиться что узел найден.
+   - Вариант B (если ls сложно парсить): сразу сделать `dump` в temp и если restic вернул “not found” — переходить к fallback.
+3. Fallback-поиск (best effort):
+   - Если основной путь не найден: попытаться восстановить через `restic restore --include` (см. Шаг 4) или поискать файл иначе.
+   - (Опционально) Можно добавить “heuristic”: искать по окончанию пути `storage/app/_backup/db.sql.gz` (но не делайте `ls /` рекурсивно по всему snapshot — это может быть огромно).
+
+**Acceptance:** даже если exact path не найден, система **не должна ломаться**: либо fallback на staging, либо понятное сообщение “dump file not found in snapshot”.
+
+### Шаг 3. Новый DB-only restore flow в `RunRestoreJob`
+
+В `RunRestoreJob` (или отдельном методе) сделать разветвление:
+
+- если `scope === 'db'`:
+  - **не выполнять stage restore файлов**
+  - **не выполнять atomic swap директорий**
+  - выполнить следующий pipeline:
+
+#### Pipeline DB-only (предлагаемый)
+
+1. Acquire global lock (как сейчас).
+2. Preflight:
+   - Проверить доступность repo (как минимум выполнить `restic snapshots`/`ls`/`dump`).
+   - Проверить свободное место:
+     - Для DB-only достаточно `disk_free_space()` на temp-директории (см. ниже), сравнить хотя бы с “ожидаемым размером дампа” (если известно) + запас.
+3. Создать **safety DB dump** текущей базы (как уже делаете перед cutover).
+4. Maintenance mode:
+   - Рекомендуется `artisan down --secret=...` (с bypass-secret как у вас), чтобы не держать сайт на “старых данных” во время импорта.
+   - (Если очень не хочется — можно сделать optional, но лучше как у full restore.)
+5. Скачать dump из snapshot:
+   - Выбрать `tmpDumpPath`, например: `storage_path('app/_backup/restore/db.sql.gz')` **в живом окружении** (не в staging).
+   - `ResticRunner->dump($snapshotId, $dumpPathInSnapshot, $tmpDumpPath)`.
+6. Wipe database:
+   - Использовать вашу “безопасную wipe” (которая не трогает таблицы пакета) — вы это уже отдельно фиксите/зафиксируете.
+7. Import dump:
+   - Импортировать из `$tmpDumpPath` (gzip → mysql).
+8. Post-ops:
+   - `optimize:clear`
+   - `queue:restart` (на проде нормально; в dev можно флагом отключать)
+   - `artisan up`
+9. Cleanup:
+   - удалить `$tmpDumpPath` (best effort)
+10. Meta:
+
+- `meta.restore.scope = 'db'`
+- `meta.restore.db_restore_method = 'dump'|'restore_include'|'staging_fallback'`
+- `meta.restore.db_dump_target_path = ...` (локальный temp путь, можно обрезать)
+- шаги: `dump_db_from_snapshot`, `db_wipe`, `db_import`, `post_ops`
+
+### Шаг 4. Fallback: `restic restore --include` (если dump не подходит)
+
+Если `restic dump` по каким-то причинам неудобен/ограничен, либо если нужно восстановить дамп в директорию с сохранением пути, можно использовать:
+
+- `restic restore <snapshotId> --target <tempDir> --include <dumpPath>` ([restic.readthedocs.io](https://restic.readthedocs.io/en/latest/050_restore.html?utm_source=chatgpt.com))
+
+Но учтите: restic restore сохранит структуру путей внутри target (может получиться `<tempDir>/<abs path>/storage/app/_backup/db.sql.gz>`). Тогда нужна функция `resolveDumpFileOnDiskFromRestoreTarget()`.
+
+**Рекомендуемая стратегия:**
+
+- Primary: `dump`
+- Secondary: `restore --include`
+- Tertiary: старый staging-flow (если вообще не нашли dump path)
+
+### Шаг 5. Filament UI (BackupsSnapshots restore wizard)
+
+Если в wizard уже есть “scope”, убедиться, что:
+
+- `db` scope реально маршрутизируется в новую ветку (DB-only flow).
+- В описании/подсказке рядом с выбором:
+  - “DB-only: извлекается только дамп БД из snapshot, файлы проекта не меняются”.
+
+Если scope пока “внутренний” — добавить его в UI.
+
+------
+
+## Логирование / мета / безопасность
+
+- В meta обязательно писать:
+  - `restore_scope`
+  - `db_restore_method`
+  - `snapshot_id`
+  - exit_code/duration stdout/stderr (truncated)
+- Никогда не писать:
+  - S3 access key/secret
+  - RESTIC_PASSWORD
+  - DB password
+- Если dump не найден — писать это как понятную причину (`dump_not_found_in_snapshot`) + какой fallback применён.
+
+------
+
+## Acceptance criteria
+
+1. При restore scope=`db`:
+   - **не создаётся staging dir всего проекта**
+   - **не выполняется atomic swap**
+   - скачивается/восстанавливается **только** файл `db.sql.gz` и делается import
+2. При этом:
+   - .env и файловая структура проекта не меняются
+   - restore run корректно логируется в `backup_runs` (status success/failed)
+3. При невозможности найти дамп в snapshot:
+   - либо корректный fallback (restore --include или старый staging),
+   - либо понятная ошибка с инструкцией (без “сломанных” состояний).
+
+------
+
+## Manual test plan
+
+1. **DB-only restore success**
+   - Сделать backup (чтобы snapshot гарантированно содержал `storage/app/_backup/db.sql.gz`)
+   - Изменить данные в БД
+   - Запустить restore scope=db
+   - Убедиться: данные вернулись, файлы не тронуты, staging swap не было, run=success.
+2. **Dump path mismatch**
+   - Смоделировать ситуацию, когда project_root изменился (или дамп лежит иначе)
+   - Запустить restore scope=db
+   - Убедиться: либо сработал fallback, либо понятное сообщение.
+3. **Error during import**
+   - Сломать импорт (временно неверные DB креды)
+   - Убедиться: run=failed, maintenance best-effort снимается, safety dump остаётся доступным (как сейчас у вас задумано).
+
+------
+
+
+
+------
+
+## PROMPT 10 — Simplified Settings UX: auto-prefix `restic/<app-slug>/<env>`, bucket selector, repo init, readonly project root
+
+### Цель
+
+Упростить страницу **Backups → Settings**: убрать лишние/опасные поля (Prefix, Repository), минимизировать шанс ошибиться и добавить “правильный” onboarding:
+
+1. Endpoint вводится пользователем (с `https://` или без — нормализуем).
+2. Пользователь вводит Access key + Secret key.
+3. Bucket выбирается из списка бакетов (кнопка “Refresh”), с fallback на ручной ввод, если ListBuckets недоступен.
+4. Repository path формируется автоматически:
+   - `restic/<app-slug>/<env>` (read-only)
+   - итоговый repository URI хранится в настройках (внутренне), но не вводится руками.
+5. Добавить кнопку **Init repository** в Settings, которая выполнит `restic init` для рассчитанного repo.
+6. Paths:
+   - Project root всегда `base_path()` (read-only)
+   - Include/Exclude сделать понятными, добавить дефолтный пресет exclude и явные подсказки.
+
+------
+
+## Контекст текущей реализации
+
+- Настройки хранятся в `backup_settings` (singleton).
+- Сейчас в UI есть поля: Endpoint, Bucket, Prefix, Access key, Secret key, Repository, Repository password, Retention, Schedule, Paths.
+- Ошибка “Unable to open config file… key does not exist” возникает, если repo не инициализирован — сейчас пользователь делает `restic init` вручную.
+
+------
+
+## Ограничения/принципы
+
+- Не выводить секреты (ключи, пароль restic, db пароль) в UI/логах.
+- Init — потенциально опасная операция → требуется подтверждение.
+- Не ломать уже настроенные инсталляции: если данные уже сохранены, UI должен корректно отображать и продолжать работать.
+
+------
+
+# Часть A — Data model / вычисления
+
+### A1) Добавить/зафиксировать вычисляемый prefix (не редактируемый)
+
+Создать функцию (например в `BackupSetting` или в отдельном helper/service):
+
+```
+computeRepositoryPrefix(): string
+```
+
+Алгоритм:
+
+1. `appSlug`:
+   - `Str::slug(config('app.name'))`
+   - если пусто → `Str::slug(basename(base_path()))`
+   - если пусто → `project-<first8(sha1(base_path()))>`
+2. `env = config('app.env')` (fallback `production`)
+3. prefix = `"restic/{$appSlug}/{$env}"`
+
+**Стабильность:**
+
+- Если в `backup_settings` уже сохранён `repository_prefix` (или аналог) — использовать его, не пересчитывать.
+- Автогенерация применяется только при первом сохранении/если поле пустое.
+
+> Если сейчас в модели такого поля нет — добавь `repository_prefix` (string, nullable) + миграцию.
+> Альтернатива: хранить только repository URI, но prefix отдельно удобнее для UI.
+
+### A2) Убрать вводимые пользователем поля Prefix и Repository
+
+- Prefix больше не хранится как пользовательский input.
+- Repository строку (`s3:https://.../bucket/...`) пользователь не редактирует.
+- Repo URI строится из: normalized endpoint + bucket + computed prefix.
+
+### A3) Нормализовать Endpoint
+
+Создать функцию:
+`normalizeEndpoint(string $value): string`
+
+Правила:
+
+- trim
+- если нет схемы → добавить `https://`
+- убрать trailing `/`
+
+------
+
+# Часть B — Bucket select + refresh (S3 listBuckets)
+
+### B1) Реализовать “List buckets” через S3 API (а не через restic)
+
+Добавить сервис, например `S3ClientFactory` + `S3BucketsService`, который используя:
+
+- endpoint
+- access key
+- secret key
+  получает список бакетов.
+
+Требование: работать с S3-compatible (Selectel).
+
+### B2) UI поведение
+
+- Поле Bucket по умолчанию — **Select** (пустой, без опций).
+- Рядом кнопка **Refresh**:
+  - вызывает backend action: `loadBuckets(endpoint, accessKey, secretKey)`
+  - возвращает список бакетов → заполняет options.
+- Если получаем ошибку “AccessDenied” / “ListBuckets not allowed”:
+  - показываем предупреждение
+  - переключаем поле Bucket в режим **TextInput** (fallback) или показываем рядом второй input “Enter bucket manually”.
+
+> Важно: не делать авто-запрос при каждом вводе символов ключа.
+
+------
+
+# Часть C — Repository status + Init button
+
+### C1) Добавить в Settings блок “Repository status”
+
+При отображении страницы:
+
+- если нет endpoint/keys/bucket/password → статус “Not configured”
+- иначе попытка проверки репозитория:
+  - выполнить лёгкую команду restic, например `restic snapshots --json` (через `ResticRunner`)
+  - если ошибка “config file … key does not exist / not a repository” → статус `Not initialized`
+  - если success → `OK` (можно показать snapshots count)
+  - иначе → `Error` + короткое сообщение
+
+Результат кэшировать на 15–30 сек, чтобы не долбить restic на каждый render.
+
+### C2) Кнопка Init repository
+
+Добавить кнопку (action) в Settings:
+
+- активна только если статус `Not initialized` и все поля заполнены
+- при нажатии:
+  - спрашиваем подтверждение (например, пользователь вводит `INIT` или `init` в модалке)
+  - выполняем `ResticRunner->init()`:
+    - `restic -r <repo> init`
+  - после успеха:
+    - уведомление success
+    - обновить repo status (refresh)
+
+Если repo уже initialized и init вернул “already initialized” — трактуем как success.
+
+------
+
+# Часть D — Paths UX
+
+### D1) Project root
+
+- Убрать input.
+- Всегда показывать read-only `base_path()`.
+
+### D2) Include paths
+
+- Оставить editable (повторяющийся список строк).
+- Подсказка:
+  - “Если пусто — бэкапится весь проект (Project root), кроме Exclude paths.”
+  - “Если заполнено — бэкапятся только перечисленные пути (относительно Project root).”
+- Валидация:
+  - запрещать абсолютные пути (начинающиеся с `/`), либо показывать warning и автоматически приводить к относительному.
+
+### D3) Exclude paths
+
+- Editable list + кнопка “Restore defaults”.
+- Дефолтный пресет (минимальный безопасный):
+  - `vendor`
+  - `node_modules`
+  - `.git`
+  - `storage/framework`
+  - `storage/logs`
+  - `bootstrap/cache`
+  - `public/build`
+  - `public/hot`
+  - `storage/app/_backup` (обсудить: обычно дамп БД должен включаться, так что **НЕ исключать**; исключать нельзя, иначе backup потеряет db.sql.gz)
+
+Отдельно явная подсказка:
+
+- “Не исключайте `storage/app/_backup`, иначе в snapshot не будет дампа БД.”
+
+------
+
+# Часть E — Миграции и обратная совместимость
+
+### E1) Если добавляем `repository_prefix`
+
+- миграция: добавить nullable `repository_prefix` в `backup_settings`.
+- при загрузке старых настроек:
+  - если у пользователя уже был prefix/repository:
+    - сохранить его в `repository_prefix` один раз (migration или runtime upgrade)
+    - не менять существующий путь, чтобы не “потерять” старый репозиторий.
+
+### E2) Repository URI
+
+- Можно продолжать хранить `repository` как string в settings (как сейчас), но:
+  - формировать автоматически и делать read-only в UI.
+- Либо хранить endpoint+bucket+repository_prefix отдельно, а repository вычислять на лету для ResticRunner.
+
+------
+
+# Acceptance criteria
+
+1. На Settings больше нет полей:
+   - Prefix (input)
+   - Repository (input)
+2. Bucket выбирается из Select после “Refresh”, но если listBuckets недоступен — есть ручной ввод.
+3. На странице виден read-only “Repository path”:
+   - `restic/<app-slug>/<env>`
+     и (опционально) read-only repo uri.
+4. Есть статус repo и кнопка Init:
+   - после init пропадает ошибка “unable to open config file…”
+   - Snapshots page начинает работать.
+5. Project root read-only и равен `base_path()`.
+6. Include/Exclude с понятными подсказками и дефолтами.
+
+------
+
+# Manual test plan
+
+1. **Fresh install**:
+   - ввести endpoint+keys → refresh buckets → выбрать bucket → задать password → init → snapshots открываются.
+2. **No ListBuckets permission**:
+   - refresh buckets → видим warning → вводим bucket вручную → init работает.
+3. **Existing install**:
+   - обновить пакет → existing repo продолжает открываться, не “перескакивает” на новый auto-prefix.
+4. **Paths defaults**:
+   - убедиться, что `storage/app/_backup/db.sql.gz` попадает в backup.
+
+------
+
+## PROMPT 11 — Delete snapshot(s): точечное удаление снапшотов из Filament (restic forget + prune) + логирование в backup_runs
+
+### Цель
+
+Добавить в страницу **Backups → Snapshots** возможность **точечно удалить любой snapshot** (один) из репозитория restic через UI.
+
+Удаление должно быть безопасным:
+
+- с подтверждением,
+- с global lock (чтобы не пересекаться с backup/restore),
+- с логированием в `backup_runs`,
+- без утечки секретов,
+- с корректным обновлением таблицы снапшотов после операции.
+
+------
+
+# 1) UX/Поведение
+
+### 1.1 Row action “Delete”
+
+В таблице Snapshots добавить **Row Action**:
+
+- label: `Delete`
+- icon: trash
+- color: danger
+
+### 1.2 Подтверждение (обязательно)
+
+Показать modal:
+
+- Заголовок: `Delete snapshot`
+- Текст: “Это удалит snapshot из репозитория. Освобождение места потребует prune и может занять время.”
+- Поле подтверждения: пользователь должен ввести **первые 8 символов** snapshot id (или полностью).
+  - expected: `$snapshotIdShort = substr($id, 0, 8)`
+  - input: `confirmation`
+  - validation: must equal `$snapshotIdShort`
+- Кнопки: `Cancel` / `Delete`
+
+### 1.3 Блокировка UI
+
+Во время выполнения:
+
+- показывать loading state у кнопки
+- после завершения — Notification success/error
+- после success — обновить таблицу snapshots (refresh).
+
+------
+
+# 2) Команда restic и стратегия удаления
+
+### 2.1 Основная команда
+
+Использовать:
+
+- `restic forget <SNAPSHOT_ID> --prune`
+
+Обоснование:
+
+- `forget` удаляет ссылку на снапшот,
+- `--prune` освобождает место (иначе пользователь думает “не удалилось”).
+
+### 2.2 Время выполнения
+
+`--prune` может идти долго. Нужно:
+
+- выполнять в фоне через Job (рекомендуется),
+- либо синхронно только если проект прямо хочет “быстро и просто” (но лучше job).
+
+------
+
+# 3) Архитектура: Job + логирование в backup_runs
+
+### 3.1 Создать Job
+
+Создать `ForgetSnapshotJob` (или `DeleteSnapshotJob`) в пакете:
+
+- входные параметры:
+  - `string $snapshotId`
+  - `?int $userId` (опционально, если есть auth)
+  - `string $trigger = 'filament'`
+
+### 3.2 Запись в backup_runs
+
+При запуске Job создать `BackupRun`:
+
+- `type = 'forget_snapshot'` (или `'maintenance'`)
+- `status = 'running'`
+- `meta`:
+  - `snapshot_id`
+  - `trigger`
+  - `initiator_user_id` (если есть)
+  - `steps` (см. ниже)
+
+После выполнения:
+
+- `status = success|failed|skipped`
+- `finished_at`, `duration_ms`
+- `meta.steps.forget_prune`: stdout/stderr truncated, exitCode, duration.
+
+### 3.3 Global lock
+
+Использовать тот же lock-key, что backup/restore (одна операция за раз):
+
+- если lock не получен → run.status = `skipped`, `meta.reason=lock_unavailable`
+- Notification в UI: “Another backup/restore operation is running.”
+
+------
+
+# 4) ResticRunner: добавить метод forgetSnapshot
+
+### 4.1 Метод
+
+В `ResticRunner` добавить:
+
+- `public function forgetSnapshot(string $snapshotId, bool $prune = true): ProcessResult`
+
+Собирает команду:
+
+- `restic forget <snapshotId> --prune` (если $prune)
+
+Логирование:
+
+- команда в meta без секретов.
+
+------
+
+# 5) Filament: интеграция в BackupsSnapshots
+
+### 5.1 Row action
+
+В таблице snapshots добавить action:
+
+- вызывает dispatch `ForgetSnapshotJob::dispatch($id, auth()->id() ?? null)`
+- показывает Notification “Delete scheduled” (если async)
+- или “Deleted” (если sync)
+
+### 5.2 Обновление таблицы
+
+После завершения job таблица обновится при следующем refresh.
+Если хочешь мгновенно — можно:
+
+- показать кнопку Refresh (уже есть),
+- либо auto-refresh через polling (не обязательно).
+
+------
+
+# 6) Edge cases / Ошибки
+
+1. Repo not initialized / unreachable:
+   - action disabled
+   - показать tooltip “Repository is not available”
+2. Snapshot not found:
+   - restic вернёт ошибку → status failed + stderr в meta
+3. `forget` success, `prune` failed:
+   - считать overall как failed или “partial success”:
+     - предпочтение: `failed` + meta `{ forget_ok: true, prune_ok: false }`
+4. Нельзя удалять snapshot, который прямо сейчас используется restore/backup:
+   - lock это уже решает
+5. Секреты:
+   - убедиться, что stdout/stderr не содержат ключей/паролей (в идеале они не должны, но всё равно truncation как в других шагах).
+
+------
+
+# 7) Acceptance criteria
+
+1. На странице Snapshots есть row action Delete с подтверждением по short-id.
+2. После удаления snapshot исчезает из списка (после refresh).
+3. Операция пишет запись в `backup_runs` с типом `forget_snapshot` и шагами/результатом.
+4. Операция защищена global lock (при занятости — skipped + понятное уведомление).
+5. Никаких секретов не появляется в meta/logs.
+
+------
+
+# 8) Manual test plan
+
+1. Создать 2–3 снапшота (backup несколько раз).
+2. Удалить средний snapshot через UI:
+   - подтвердить short-id
+   - дождаться выполнения job
+   - refresh → snapshot пропал
+   - в Runs появился run type forget_snapshot со статусом success
+3. Запустить backup и параллельно попытаться Delete:
+   - должен быть skipped/lock_unavailable
+4. Попробовать удалить несуществующий snapshot (подменить ID):
+   - run failed, понятная ошибка в meta.
+
+------
+
+## PROMPT 12 — Lock UX overhaul: wait/queue, lock owner info, heartbeat, stale unlock + artisan command
+
+### Проблема
+
+Сейчас backup/restore используют global lock `restic-backups:operation`. Если воркер умирает/перезапускается (например, после `queue:restart`), lock остаётся жить до TTL → любые новые попытки дают `backup_runs.status=skipped` с `meta.reason=lock_unavailable`. Это портит UX и мешает работе (особенно в тестовом окружении).
+
+### Цель
+
+Сделать “человеческое” поведение:
+
+1. **Не создавать `skipped` run** при занятости lock:
+   - вместо этого **ждать** (block) небольшое время,
+   - если не дождались — **ставить в очередь** (requeue с delay/backoff), а не мусорить `skipped`.
+2. Хранить и показывать **информацию о владельце lock** (кто и что сейчас делает).
+3. Делать **heartbeat** во время долгих операций (restic restore/backup/prune), чтобы можно было отличить “живой процесс” от “залипшего”.
+4. Реализовать **stale detection** и команду `restic-backups:unlock` для принудительной разблокировки (с подтверждением).
+5. Улучшить UX в Filament: когда операция занята — показывать понятное сообщение и сведения о текущей операции (run id/type/started).
+
+------
+
+# 1) Архитектура: единый LockService
+
+Создать класс, например:
+
+- `src/Support/OperationLock.php` (или `src/Services/OperationLockService.php`)
+
+### 1.1 Константы/ключи
+
+- lock key: `restic-backups:operation`
+- info key: `restic-backups:operation:info`
+
+### 1.2 Методы
+
+**(A)** `public function acquire(string $type, int $ttlSeconds, int $blockSeconds = 30, array $context = []): ?LockHandle`
+
+- Пытается взять lock с ожиданием:
+  - `$lock = Cache::lock($key, $ttlSeconds)`
+  - `$lock->block($blockSeconds)` (или аналог)
+- Если удалось:
+  - создаёт/обновляет `operation:info` JSON:
+    - `type` = `backup|restore|forget_snapshot|check|...`
+    - `run_id` (если уже известен)
+    - `started_at` (ISO8601)
+    - `hostname` (`gethostname()`/`php_uname('n')`)
+    - `pid` (`getmypid()`)
+    - `ttl_seconds`
+    - `expires_at` (now + ttl)
+    - `last_heartbeat_at` (now)
+    - `context` (например snapshot_id, trigger)
+  - возвращает handle, который умеет `heartbeat()` и `release()`
+
+**(B)** `public function heartbeat(array $patch = []): void`
+
+- Обновляет `last_heartbeat_at` + опционально дописывает поля (например текущий шаг).
+
+**(C)** `public function release(): void`
+
+- освобождает lock (если есть)
+- `Cache::forget(infoKey)` (best effort)
+
+**(D)** `public function getInfo(): ?array`
+
+- читает `operation:info`
+
+**(E)** `public function isStale(int $seconds = 900): bool`
+
+- stale если `last_heartbeat_at` старее 15 минут (или configurable)
+
+> Важно: сервис должен работать на **том же cache store**, что и queue worker.
+
+------
+
+# 2) Изменить Jobs: ожидание + requeue вместо skipped
+
+## 2.1 Общая стратегия
+
+- **Не создавать `BackupRun` до успешного acquire lock**, либо создавать со статусом `queued` (но не `skipped`).
+- Если lock занят:
+  - подождать `blockSeconds` (например 30–60 сек),
+  - если не получилось — сделать `$this->release($delay)` (ре-очередь) с backoff и **без** записи `backup_runs`.
+
+### 2.2 Рекомендованные параметры
+
+- Backup:
+  - ttl: 2 часа (как сейчас)
+  - blockSeconds: 30
+  - requeue delay: 60, 120, 300 (backoff)
+- Restore:
+  - ttl: 6 часов (как сейчас)
+  - blockSeconds: 60
+  - requeue delay: 120, 300, 600 (backoff)
+
+### 2.3 Реализация в `RunBackupJob` и `RunRestoreJob`
+
+В `handle()`:
+
+1. попробовать acquire lock через OperationLock:
+   - если не удалось:
+     - если job queued → `$this->release($delaySeconds); return;`
+     - если job sync/manual CLI → вернуть понятный результат/исключение, чтобы UI показал “занято”
+2. после acquire:
+   - создать `BackupRun` со статусом `running`
+   - записать `run_id` в `operation:info`
+3. во время шагов:
+   - перед каждым шагом обновлять `operation:info.context.step = '...'` + `heartbeat()`
+4. в `finally`:
+   - `operationLock->release()`
+
+> Acceptance: больше не должно появляться `backup_runs.status=skipped` с `lock_unavailable` при нормальной конкуренции. Только реальные ошибки.
+
+------
+
+# 3) Heartbeat внутри ResticRunner (критично для длительных процессов)
+
+Проблема: stage restore / prune могут идти 10–20 минут. Если heartbeat обновлять только “до/после шага”, stale-детектор будет думать что процесс умер.
+
+### Решение
+
+Обновить `ResticRunner` так, чтобы во время выполнения long-running restic команд:
+
+- он мог принимать callback `heartbeat` и вызывать его раз в N секунд (например каждые 15–30 сек) пока процесс идёт.
+
+Пример API:
+
+- `public function run(array $args, ?callable $heartbeat = null, int $heartbeatEverySeconds = 20): ProcessResult`
+
+Внутри:
+
+- запуск Symfony Process асинхронно (`start()`)
+- цикл while running:
+  - если прошло heartbeatEverySeconds → вызвать `$heartbeat(['step' => ..., 'command' => ...])`
+  - спать коротко (0.2–0.5s)
+- затем собрать stdout/stderr/duration/exitCode как сейчас.
+
+> Так heartbeat будет работать на `restic backup`, `restore`, `forget --prune`, `check`.
+
+------
+
+# 4) Инфо о владельце lock в Filament UI
+
+## 4.1 Где показывать
+
+Минимум:
+
+- на странице `BackupsSnapshots` (там где restore wizard и refresh snapshots)
+- и/или на `BackupsDashboard` (Overview) — если он уже есть/будет.
+
+Показывать баннер/alert:
+
+- “Операция выполняется: {type}, старт {started_at}, host {hostname}”
+- если есть `run_id` → ссылка “Open run details” на `BackupsRuns` (фильтр по id или прямой view).
+
+## 4.2 Поведение кнопок
+
+- При клике “Run backup now” или “Restore”:
+  - если lock занят:
+    - показывать Notification: “Сейчас выполняется другая операция. Задача поставлена в очередь.” (если мы requeue)
+    - либо “Подождите, операция выполняется: …” (если синхронный запуск без очереди)
+
+------
+
+# 5) Команда `restic-backups:unlock`
+
+Создать artisan command:
+
+- `restic-backups:unlock`
 
 Поведение:
 
-- Если `healthchecks_enabled=false` или pingUrl пустой → ничего не делать.
-- Если включено “/start /fail”:
-  - start → `${pingUrl}/start`
-  - fail → `${pingUrl}/fail`
-  - success → `${pingUrl}`
-- Если выключено — можно просто пинговать success и в fail тоже базовый url (или не делать fail ping). Решение за тобой, но сделай предсказуемо.
+1. читает `operation:info`
+2. если пусто:
+   - вывод “No active lock info found.” + попытка `forceRelease()` всё равно (best effort)
+3. если есть:
+   - вывести кратко: type/run_id/started/last_heartbeat/hostname/pid/expires_at
+   - спросить подтверждение:
+     - ввести `UNLOCK` или `yes`
+   - выполнить:
+     - `Cache::lock(lockKey)->forceRelease()`
+     - `Cache::forget(infoKey)`
+4. опции:
+   - `--force` (без подтверждения)
+   - `--stale` (разблокировать только если stale)
+   - `--stale-seconds=900` (кастом)
 
-Таймаут HTTP: 5–10 секунд.
-Ошибки ловить, писать в `$run->meta['healthchecks']['errors'][]`.
-
-------
-
-# 5) Встроить уведомления и healthchecks в job lifecycle
-
-Важно: НЕ дублировать логику в каждом job вручную.
-
-## 5.1. Общая “финализация” run
-
-Сделай общий метод/трейт/сервис (например `RunFinalizer`), либо аккуратно добавь в каждый job одинаковый блок:
-
-- В самом начале:
-  - healthchecks start ping (если есть pingUrl для типа job)
-- В конце:
-  - healthchecks success или fail
-  - notify success/fail (по настройкам)
-
-Где брать pingUrl:
-
-- backup → `healthchecks_backup_ping_url`
-- check → `healthchecks_check_ping_url`
-- restore → `healthchecks_restore_ping_url`
-
-## 5.2. Какие jobs затрагиваем
-
-- `RunBackupJob` — после выставления final status
-- `RunRestoreJob` — после final status
-- Добавить новый job `RunResticCheckJob` (см. ниже) — тоже интегрировать
+> Это must-have для админов и для dev.
 
 ------
 
-# 6) Weekly restic check: новый job
+# 6) Stale lock strategy (безопасно)
 
-Создай `src/Jobs/RunResticCheckJob.php`
+По умолчанию:
 
-Поведение:
+- **не авто-forceRelease** в рабочих сценариях.
+- stale detection используется для:
+  - отображения предупреждения “Lock looks stale (heartbeat > 15 min)”
+  - облегчения решения админа (unlock command / будущая кнопка Force unlock).
 
-1. lock (отдельный или общий “global” ключ, чтобы не пересекался с backup/restore)
-2. создать `BackupRun`:
-   - type = `check`
-   - status = `running`
-3. вызвать `ResticRunner->check()` (и при желании `snapshots()`/`stats` не нужно)
-4. записать результат в meta
-5. статус success/failed
-6. healthchecks ping (start/success/fail)
-7. уведомления (по правилам)
-8. unlock в finally
+(Авто-forceRelease можно добавить позже под флагом `config('restic-backups.locks.auto_release_stale')`.)
 
 ------
 
-# 7) Scheduling: daily backup + weekly check
+# 7) Acceptance criteria
 
-## 7.1. Где регистрировать расписание
-
-Сделай так, чтобы пакет мог сам подключаться к Laravel scheduler, **но управляемо**:
-
-В `ResticBackupsServiceProvider::boot()` добавь регистрацию расписания через:
-
-- `app()->booted(function () { $schedule = app(Schedule::class); ... })`
-
-Или любой корректный способ для Laravel 12.
-
-## 7.2. Что именно планировать
-
-Если `BackupSetting::singleton()->schedule['enabled'] = true`:
-
-### Daily backup
-
-- каждый день в `daily_time` (из settings)
-- timezone из settings (fallback `config('app.timezone')`)
-- задача: `dispatch(new RunBackupJob(tags: ['trigger:schedule'], trigger:'schedule'))`
-- важно: запускать через очередь, а не синхронно.
-
-### Weekly restic check
-
-- раз в неделю в выбранный день/время
-- задача: `dispatch(new RunResticCheckJob(trigger:'schedule'))`
-
-## 7.3. Важный edge case
-
-Scheduler вызывается в CLI. Доступ к БД settings должен быть.
-Если settings ещё не созданы — job не планировать (или планировать, но будет fail). Лучше: не планировать и вывести warning в логи.
+1. При параллельных попытках backup/restore:
+   - **не создаются** `backup_runs` со `status=skipped lock_unavailable`
+   - вместо этого job ожидает lock и/или уходит в requeue.
+2. В `Cache` появляется `restic-backups:operation:info` во время операции, и очищается после.
+3. Во время длительных restic операций обновляется `last_heartbeat_at` (каждые 20–30 сек).
+4. `php artisan restic-backups:unlock` снимает lock и чистит info, с подтверждением.
+5. Filament показывает понятное сообщение о текущей операции (type/started/host/run_id).
 
 ------
 
-# 8) Runs list: показать новые типы и уведомления
+# 8) Manual test plan
 
-Убедись, что на странице Runs:
-
-- `type=check` отображается
-- в Details видно:
-  - healthchecks ping results/errors
-  - notifications sending results/errors (без секретов)
-
-------
-
-# 9) Manual test plan (обязательный output)
-
-Реализатор должен описать проверки:
-
-1. Включить notifications:
-   - Telegram token/chat_id или email recipients
-   - отправить “Test notification” из Settings
-2. Включить healthchecks:
-   - указать ping URL для backup
-   - нажать “Ping healthchecks test”
-3. Запустить “Run backup now”:
-   - убедиться: при start был pingStart, на success pingSuccess
-   - пришло уведомление (если включено)
-4. Запустить “Run restic check now” (если есть кнопка/команда, или вручную dispatch):
-   - появился run type=check
-5. Scheduling:
-   - включить schedule.enabled, выставить daily_time/weekly_check_time
-   - указать, что нужен cron `schedule:run`
-   - проверить, что задачи реально диспатчатся (можно временно поставить время на ближайшие 1–2 минуты)
+1. Запустить restore (долгий) → убедиться, что:
+   - lock info заполняется
+   - heartbeat обновляется
+2. Во время restore нажать “Run backup now”:
+   - не появляется skipped run
+   - видим уведомление “в очереди/ожидании”
+3. Убить воркер посреди операции:
+   - lock остаётся, но heartbeat перестаёт обновляться
+   - UI показывает “stale”
+   - `restic-backups:unlock --stale --force` снимает lock
+4. После unlock новая операция стартует.
 
 ------
 
-# 10) Acceptance criteria
+Если хочешь — могу сразу предложить “минимальный релизный срез” (MVP): **(1) info + unlock command + heartbeat в ResticRunner + убрать skipped**. А “очередь” (requeue/backoff) можно сделать в этом же PR, но её проще тестировать на реальной очереди.
 
-Шаг 8 завершён, если:
 
-- В Settings есть настройки Notifications + Healthchecks + Scheduling
-- Telegram/email отправляются по настройкам на success/fail (и есть тестовая отправка)
-- Healthchecks пингуется на start/success/fail (и есть тестовый ping)
-- Реализован `RunResticCheckJob` и он логируется в `backup_runs`
-- Daily backup и weekly check планируются через scheduler по settings
-- Ошибки уведомлений/healthchecks не ломают основной job, но логируются в `backup_runs.meta`
 
-------
+## PROMPT — Fix Restore DB: не терять `backup_runs`, не оставлять пустую БД, не тащить “пакетные” таблицы в дампы
 
-# 11) Доп. пожелания (не обязательно, но если легко)
+Ты — senior Laravel 12 / PHP 8.4 / Filament 4 инженер. В пакете `siteko/filament-restic-backups` уже реализован restore v2 (staged + atomic swap + preflight + Step7 polish). На текущем этапе обнаружен **критический баг**: при restore БД джоб может **стереть таблицы пакета (`backup_runs`, `backup_settings`)** через `db:wipe`/`dropAllTables()`, после чего падает на `run->update()`. Итог — **БД остаётся пустой**, а **meta последнего restore-run недоступна** (таблица `backup_runs` уже уничтожена).
 
-- Добавить кнопку “Run restic check now” в UI (например на Settings или Snapshots)
-- Добавить на Settings маленький “Health widget”: last successful backup time, last check time
+Нужно исправить восстановление базы данных так, чтобы:
+
+1. пакетные таблицы **никогда не удалялись** во время restore БД,
+2. дампы **не содержали** пакетные таблицы (иначе они могут “перезаписаться” из снапшота),
+3. при фейле импорта после wipe выполнялся **best-effort DB rollback из safety dump**, чтобы не оставлять проект на пустой БД.
 
 ------
 
-Если хочешь, я могу следующим сообщением дать “мини-чеклист прод-ввода”: cron для scheduler, systemd queue worker, права на storage, где держать Telegram токен, и как безопасно проверять restore на staging.
+# 0) Контекст (как сейчас)
+
+Файлы:
+
+- `packages/siteko/restic-backups/src/Jobs/RunRestoreJob.php`
+  - `wipeDatabase()` вызывает `artisan db:wipe --force --database=...`, fallback: `dropAllTables()`
+  - сразу после wipe выполняется `$run->update(['meta' => $meta])`
+- `packages/siteko/restic-backups/src/Jobs/RunBackupJob.php`
+  - генерирует дамп `storage/app/_backup/db.sql.gz`
+- `RunRestoreJob::runSafetyBackup()` тоже делает safety DB dump перед cutover.
+
+Проблема: `db:wipe` и `dropAllTables()` удаляют **все** таблицы, включая `backup_runs`/`backup_settings`. Затем любой `BackupRun::update()` падает (таблица не существует), restore прерывается, импорт дампа не выполняется → **пустая БД**.
+
+------
+
+# 1) Цели и требования
+
+## 1.1. Главное требование
+
+Во время restore БД **нельзя** удалять:
+
+- `backup_runs`
+- `backup_settings`
+
+Идеально: сделать это расширяемым (конфигом), но минимум — эти две таблицы.
+
+## 1.2. Дамп БД не должен включать таблицы пакета
+
+Чтобы restore не мог “принести” старые `backup_runs/backup_settings` из снапшота, нужно исключить их из дампа:
+
+- для MySQL/MariaDB: `--ignore-table=<db>.backup_runs` и `--ignore-table=<db>.backup_settings`
+
+Это нужно применить минимум в:
+
+- `RunBackupJob::dumpMysql()`
+- `RunRestoreJob::dumpMysql()` (safety dump)
+
+## 1.3. Best-effort DB rollback
+
+Если DB wipe уже сделан, а импорт дампа упал, job должен:
+
+- попытаться импортировать **safety dump** обратно
+- зафиксировать это в `backup_runs.meta.steps.rollback_db_restore` (и флаги attempted/success)
+- после этого продолжить общий rollback (если применимо) и поднять приложение (`up`) best-effort
+
+Важно: rollback БД — best-effort, но он должен **выполняться автоматически**, чтобы не оставлять пустую БД.
+
+------
+
+# 2) Изменения в коде (пошагово)
+
+## 2.1. Добавить единый список “внутренних” таблиц пакета
+
+В `RunRestoreJob` (и желательно переиспользовать в `RunBackupJob`) добавить метод:
+
+- `protected function internalTables(): array`
+  - возвращает `['backup_runs', 'backup_settings']`
+
+Опционально (желательно): разрешить расширение через конфиг пакета, например:
+
+- `config('restic-backups.database.preserve_tables', ['backup_runs','backup_settings'])`
+
+Но если конфиг трогать не хочешь — ок, захардкодь минимум.
+
+## 2.2. Полностью убрать `artisan db:wipe` из restore пути (или запретить его по умолчанию)
+
+Переписать `wipeDatabase()` в `RunRestoreJob`:
+
+- Вместо `db:wipe` выполнять **удаление всех таблиц, кроме internalTables()**
+- То есть новая логика:
+  1. определить driver (`mysql/mariadb/pgsql/sqlite`)
+  2. вызвать `dropAllTablesExcept($connectionName, $excludeTables)`
+  3. вернуть meta с:
+     - `exit_code`
+     - `excluded_tables`
+     - `dropped_tables_count`
+     - `driver`
+     - `duration_ms`
+
+> Почему так: `db:wipe` не умеет exclude, и именно он приводит к исчезновению `backup_runs` и падению логирования.
+
+### 2.2.1. Реализовать `dropAllTablesExcept()`
+
+Добавить в `RunRestoreJob` новый метод:
+
+- `protected function dropAllTablesExcept(string $connectionName, array $excludeTables): array`
+
+Для MySQL/MariaDB:
+
+- `SET FOREIGN_KEY_CHECKS=0`
+- получить список таблиц:
+  - `SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'`
+- удалить таблицы, которые **не** в exclude
+- (желательно) также удалить VIEW (если есть), но аккуратно:
+  - `SHOW FULL TABLES WHERE Table_type = 'VIEW'`
+  - `DROP VIEW IF EXISTS ...`
+- `SET FOREIGN_KEY_CHECKS=1`
+
+Для SQLite (best effort):
+
+- `SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'`
+- drop all кроме exclude
+
+Для Postgres (best effort):
+
+- получить таблицы из `pg_tables` (schema = 'public') + views из `pg_views`
+- `DROP TABLE ... CASCADE` / `DROP VIEW ... CASCADE` кроме exclude
+
+Если драйвер не поддержан:
+
+- вернуть exit_code=1 и понятный stderr (`Unsupported driver for safe wipe`)
+
+## 2.3. Обновить fallback `dropAllTables()`
+
+Сейчас есть `dropAllTables()` — он опасен. Либо:
+
+- удалить его использование вообще,
+- либо переписать его как thin-wrapper над `dropAllTablesExcept($connectionName, [])`.
+
+Важно: в restore flow **не должно остаться** кода, который может дропнуть `backup_runs`.
+
+## 2.4. Исключить пакетные таблицы из MySQL-dump (backup и safety)
+
+В `RunBackupJob::dumpMysql()`:
+
+- в `$baseCommand` или в `buildMysqlDumpCommand()` добавить флаги ignore-table **до** указания database:
+  - `--ignore-table={$database}.backup_runs`
+  - `--ignore-table={$database}.backup_settings`
+
+В `RunRestoreJob::dumpMysql()` сделать то же самое (safety dump).
+
+Требования к качеству:
+
+- ignore-table добавлять только если `$database` определён
+- не светить секреты (пароль как и раньше через `MYSQL_PWD`)
+
+## 2.5. Best-effort DB rollback если импорт упал после wipe
+
+В `RunRestoreJob::handle()`:
+
+Добавить флаги:
+
+- `$dbWiped = false;`
+- `$safetyDumpPath = ...` (у тебя уже вычисляется после swap через `resolveSafetyDumpPath($rollbackDir)` — это хорошо, но нужно гарантировать, что путь доступен и при db-only restore тоже, если safety backup делался)
+
+Логика:
+
+1. После успешного `wipeDatabase()`:
+   - поставить `$dbWiped = true`
+2. Если на `cutover_db_import` выброшено исключение или exit_code != 0:
+   - в `catch` (перед финальным `run->update(status=failed)`) выполнить:
+     - если `$dbWiped === true` и есть `$safetyDumpPath` и файл существует → вызвать `importMysqlDump($connectionName, $safetyDumpPath, $projectRoot)` (или универсальный `importDatabaseDump()` для драйвера)
+     - записать step meta: `meta['steps']['rollback_db_restore'] = ...`
+     - добавить `meta['rollback']['db_attempted']`, `meta['rollback']['db_success']`
+   - если safety dump нет — просто зафиксировать в meta, что rollback невозможен
+
+Важно:
+
+- rollback DB не должен “маскировать” исходную ошибку restore — status остаётся failed, но БД не пустая.
+
+------
+
+# 3) Логирование и безопасность
+
+- Все новые шаги должны логироваться в `backup_runs.meta.steps.*` (как у тебя принято: exit_code, duration_ms, stdout/stderr truncated).
+- Никаких секретов в meta: ни паролей, ни full env.
+- Если DB rollback выполнялся — обязательно записать путь safety dump (если уже пишется `meta['restore']['safety_dump_path']`, оставить/расширить).
+
+------
+
+# 4) Acceptance criteria
+
+Считаем задачу выполненной, если:
+
+1. Запуск restore с scope `db` или `both` **никогда не удаляет**:
+   - `backup_runs`
+   - `backup_settings`
+2. Даже если restore упал после wipe (например, сломали дамп или mysql client):
+   - БД **не остаётся пустой** (если был safety dump — он восстанавливается best-effort)
+   - В `backup_runs` остаётся запись о restore-run со статусом failed и meta шагами
+3. `RunBackupJob` и safety dump в `RunRestoreJob` создают дампы **без** `backup_runs/backup_settings`.
+
+------
+
+# 5) Manual test plan (минимум)
+
+## Тест A: Проверка, что `backup_runs` не стирается
+
+1. Убедиться, что в БД есть записи `backup_runs`
+2. Запустить restore (scope=both) на тестовом снапшоте
+3. Во время `cutover_db_wipe` проверить: таблица `backup_runs` существует
+4. По окончании: в Runs виден полный meta.
+
+## Тест B: Симулировать фейл импорта
+
+1. Перед restore временно “сломать” mysql client (например, подменить путь к binary или дать неверные права на дамп)
+2. Запустить restore scope=db/both
+3. Убедиться:
+   - restore падает
+   - `backup_runs` не пропадает
+   - `rollback_db_restore` выполнен (если safety dump есть)
+   - данные в БД не пустые
+
+## Тест C: Проверка дампа
+
+1. Сделать backup (обычный)
+2. Распаковать `storage/app/_backup/db.sql.gz` и убедиться, что там нет `CREATE TABLE backup_runs` / `INSERT INTO backup_runs`.
+
+------
+
+# 6) Что выдать в результате
+
+- Патч/изменения в:
+  - `RunRestoreJob.php` (safe wipe + db rollback + meta)
+  - `RunBackupJob.php` (ignore-table в mysqldump)
+- Если добавляешь конфиг:
+  - обновление `config/restic-backups.php` (секция `database.preserve_tables`, `database.exclude_from_dumps`)
+- Короткое описание миграций/обратной совместимости (миграции не нужны)
+- Commit message в стиле проекта (например: `fix(restore): preserve package tables during DB wipe and rollback on import failure`)
+
+------
+
+Если нужно — можешь дополнительно (не обязательно) сделать микро-улучшение: в meta писать `db_wipe_strategy = safe_drop_except` и `excluded_tables` (чтобы админ видел, почему “не всё удалили”).
