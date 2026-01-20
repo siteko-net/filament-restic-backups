@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace Siteko\FilamentResticBackups\Jobs;
 
 use Carbon\Carbon;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
@@ -210,6 +214,8 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 'finished_at' => now(),
                 'meta' => $meta,
             ]);
+
+            $this->notifyArchiveReady($run, $meta);
         } catch (Throwable $exception) {
             if ($run instanceof BackupRun) {
                 $meta['error_class'] = $exception::class;
@@ -415,6 +421,109 @@ class ExportSnapshotArchiveJob implements ShouldQueue
         }, $command);
 
         return implode(' ', $escaped);
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    protected function notifyArchiveReady(BackupRun $run, array $meta): void
+    {
+        if ($this->userId === null) {
+            return;
+        }
+
+        $user = $this->resolveNotificationUser($this->userId);
+
+        if (! $user || ! method_exists($user, 'notify')) {
+            return;
+        }
+
+        $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+        $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
+        $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
+
+        if ($archivePath === null || $archiveName === null) {
+            return;
+        }
+
+        $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
+
+        if ($expiresAt instanceof Carbon && now()->greaterThan($expiresAt)) {
+            return;
+        }
+
+        $downloadUrl = URL::temporarySignedRoute(
+            'restic-backups.exports.download',
+            $this->resolveArchiveLinkExpiry($expiresAt),
+            ['run' => $run->getKey()],
+        );
+
+        $snapshotLabel = $this->normalizeScalar($meta['snapshot_short_id'] ?? null)
+            ?? substr($this->snapshotId, 0, 8);
+
+        try {
+            Notification::make()
+                ->title(__('restic-backups::backups.pages.snapshots.notifications.export_ready'))
+                ->body(__('restic-backups::backups.pages.snapshots.notifications.export_ready_body', [
+                    'snapshot' => $snapshotLabel,
+                ]))
+                ->success()
+                ->actions([
+                    Action::make('download')
+                        ->label(__('restic-backups::backups.pages.snapshots.archive.download'))
+                        ->url($downloadUrl, shouldOpenInNewTab: true),
+                ])
+                ->sendToDatabase($user, isEventDispatched: true);
+        } catch (Throwable) {
+            // Notification failure should not fail the export job.
+        }
+    }
+
+    protected function resolveNotificationUser(int $userId): ?Authenticatable
+    {
+        $model = config('auth.providers.users.model');
+
+        if (! is_string($model) || $model === '' || ! is_subclass_of($model, Authenticatable::class)) {
+            return null;
+        }
+
+        $user = $model::query()->find($userId);
+
+        return $user instanceof Authenticatable ? $user : null;
+    }
+
+    protected function resolveArchiveLinkExpiry(?Carbon $expiresAt): Carbon
+    {
+        $defaultExpiry = now()->addMinutes(60);
+
+        if (! $expiresAt instanceof Carbon) {
+            return $defaultExpiry;
+        }
+
+        if ($expiresAt->lessThan($defaultExpiry) && $expiresAt->greaterThan(now())) {
+            return $expiresAt;
+        }
+
+        return $defaultExpiry;
+    }
+
+    protected function parseArchiveExpiresAt(mixed $value): ?Carbon
+    {
+        if ($value instanceof Carbon) {
+            return $value;
+        }
+
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     protected function normalizeScalar(mixed $value): ?string

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Jobs;
 
+use Filament\Notifications\Notification;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -45,6 +47,7 @@ class RunBackupJob implements ShouldQueue
         public ?string $trigger = null,
         public ?string $connectionName = null,
         public bool $runRetention = true,
+        public ?int $userId = null,
     ) {
     }
 
@@ -78,19 +81,23 @@ class RunBackupJob implements ShouldQueue
             $connectionName = $this->connectionName ?? (string) config('database.default');
             $dumpPath = storage_path('app/_backup/db.sql.gz');
 
-            $meta = [
-                'trigger' => $this->normalizeTrigger($this->trigger),
-                'tags' => $this->normalizeTags($this->tags),
-                'project_root' => $projectRoot,
-                'dump_path' => $dumpPath,
-                'connection' => $connectionName,
-                'host' => $this->hostname(),
-                'app_env' => (string) config('app.env'),
-            ];
+        $meta = [
+            'trigger' => $this->normalizeTrigger($this->trigger),
+            'tags' => $this->normalizeTags($this->tags),
+            'project_root' => $projectRoot,
+            'dump_path' => $dumpPath,
+            'connection' => $connectionName,
+            'host' => $this->hostname(),
+            'app_env' => (string) config('app.env'),
+        ];
 
-            $run = BackupRun::query()->create([
-                'type' => 'backup',
-                'status' => 'running',
+        if ($this->userId !== null) {
+            $meta['initiator_user_id'] = $this->userId;
+        }
+
+        $run = BackupRun::query()->create([
+            'type' => 'backup',
+            'status' => 'running',
                 'started_at' => now(),
                 'meta' => $meta,
             ]);
@@ -173,6 +180,8 @@ class RunBackupJob implements ShouldQueue
                 'finished_at' => now(),
                 'meta' => $meta,
             ]);
+
+            $this->notifySnapshotReady($run, $meta);
         } catch (Throwable $exception) {
             if ($run instanceof BackupRun) {
                 $meta['error_class'] = $exception::class;
@@ -973,6 +982,82 @@ class RunBackupJob implements ShouldQueue
         }, $command);
 
         return implode(' ', $escaped);
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    protected function notifySnapshotReady(BackupRun $run, array $meta): void
+    {
+        if ($this->userId === null) {
+            return;
+        }
+
+        $user = $this->resolveNotificationUser($this->userId);
+
+        if (! $user || ! method_exists($user, 'notify')) {
+            return;
+        }
+
+        $snapshotId = $this->extractSnapshotId($meta);
+        $snapshotShort = $snapshotId ? Str::substr($snapshotId, 0, 8) : null;
+
+        $body = $snapshotShort
+            ? __('restic-backups::backups.pages.snapshots.notifications.snapshot_ready_body', [
+                'snapshot' => $snapshotShort,
+            ])
+            : __('restic-backups::backups.pages.snapshots.notifications.snapshot_ready_body_generic');
+
+        try {
+            Notification::make()
+                ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_ready'))
+                ->body($body)
+                ->success()
+                ->sendToDatabase($user, isEventDispatched: true);
+        } catch (Throwable) {
+            // Notification failure should not fail the backup job.
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    protected function extractSnapshotId(array $meta): ?string
+    {
+        $backupMeta = is_array($meta['backup'] ?? null) ? $meta['backup'] : [];
+
+        $snapshotId = $this->normalizeScalar($backupMeta['snapshot_id'] ?? null);
+
+        if ($snapshotId !== null) {
+            return $snapshotId;
+        }
+
+        foreach (['stdout', 'stderr'] as $key) {
+            $output = $this->normalizeScalar($backupMeta[$key] ?? null);
+
+            if ($output === null) {
+                continue;
+            }
+
+            if (preg_match('/snapshot\\s+([0-9a-f]{8,})\\s+saved/i', $output, $matches) === 1) {
+                return $matches[1];
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveNotificationUser(int $userId): ?Authenticatable
+    {
+        $model = config('auth.providers.users.model');
+
+        if (! is_string($model) || $model === '' || ! is_subclass_of($model, Authenticatable::class)) {
+            return null;
+        }
+
+        $user = $model::query()->find($userId);
+
+        return $user instanceof Authenticatable ? $user : null;
     }
 
     protected function formatProcessResult(\Siteko\FilamentResticBackups\DTO\ProcessResult $result): array

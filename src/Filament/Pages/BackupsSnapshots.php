@@ -18,6 +18,7 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Wizard\Step;
 use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
+use Filament\Tables\Columns\ViewColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
@@ -26,23 +27,28 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\HtmlString;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
+use Siteko\FilamentResticBackups\Jobs\ExportSnapshotArchiveJob;
 use Siteko\FilamentResticBackups\Jobs\ForgetSnapshotJob;
+use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Jobs\RunRestoreJob;
+use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
-use Siteko\FilamentResticBackups\Jobs\ExportSnapshotArchiveJob;
 use Throwable;
+use function Filament\Support\generate_loading_indicator_html;
 
 class BackupsSnapshots extends BaseBackupsPage implements HasTable
 {
     use InteractsWithTable;
 
-    private const SNAPSHOT_CACHE_SECONDS = 30;
+    private const SNAPSHOT_CACHE_SECONDS = 10;
     private const ERROR_SNIPPET_LIMIT = 1500;
 
     /**
@@ -133,6 +139,10 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->limitList(3)
                     ->expandableLimitedList()
                     ->toggleable(isToggledHiddenByDefault: true),
+                ViewColumn::make('archive')
+                    ->label(__('restic-backups::backups.pages.snapshots.table.columns.archive'))
+                    ->view('restic-backups::tables.columns.archive-status')
+                    ->toggleable(),
             ])
             ->deferColumnManager(false)
             ->filters([
@@ -249,6 +259,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->icon('heroicon-o-arrow-down-tray')
                     ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.export.modal_heading'))
                     ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.export.modal_description'))
+                    ->visible(fn(array $record): bool => ! $this->isArchiveReady($record))
                     ->disabled(fn(): bool => $this->snapshotError !== null)
                     ->form([
                         Toggle::make('include_env')
@@ -391,7 +402,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         'record' => $record,
                     ])),
             ])
-            ->paginationPageOptions([25, 50, 100]);
+            ->paginationPageOptions([25, 50, 100])
+            ->poll(self::SNAPSHOT_CACHE_SECONDS . 's');
     }
 
     public function content(Schema $schema): Schema
@@ -403,28 +415,23 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         if (is_array($lockInfo)) {
             $context = is_array($lockInfo['context'] ?? null) ? $lockInfo['context'] : [];
+            $operationType = $this->resolveOperationTypeLabel($lockInfo['type'] ?? null, $notAvailable);
+            $operationStep = $this->resolveOperationStepLabel($context['step'] ?? null, $notAvailable);
+            $startedAt = $this->formatLockTimestamp($lockInfo['started_at'] ?? null, $notAvailable);
+            $lastActivity = $this->formatRelativeTime($lockInfo['last_heartbeat_at'] ?? null, $notAvailable);
 
-            $components[] = Section::make(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.title'))
+            $components[] = Section::make(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.title', [
+                'type' => $operationType,
+            ]))
                 ->description(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.description'))
                 ->schema([
-                    Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.type', [
-                        'type' => $lockInfo['type'] ?? $notAvailable,
-                    ])),
-                    Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.run_id', [
-                        'run_id' => $lockInfo['run_id'] ?? $notAvailable,
-                    ])),
                     Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.started_at', [
-                        'started_at' => $lockInfo['started_at'] ?? $notAvailable,
-                    ])),
-                    Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.heartbeat', [
-                        'heartbeat' => $lockInfo['last_heartbeat_at'] ?? $notAvailable,
-                    ])),
-                    Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.host', [
-                        'host' => $lockInfo['hostname'] ?? $notAvailable,
+                        'started_at' => $startedAt,
                     ])),
                     Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.step', [
-                        'step' => $context['step'] ?? $notAvailable,
+                        'step' => $operationStep,
                     ])),
+                    Text::make(fn(): HtmlString => $this->formatActivityLine($lastActivity, ! $lockStale)),
                     Text::make(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.stale_warning'))
                         ->color('danger')
                         ->visible(fn(): bool => $lockStale),
@@ -454,12 +461,58 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ->components($components);
     }
 
+    protected function isArchiveReady(array $record): bool
+    {
+        $archive = is_array($record['archive'] ?? null) ? $record['archive'] : [];
+
+        return ($archive['status'] ?? null) === 'ready';
+    }
+
     /**
      * @return array<Action>
      */
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('create_snapshot')
+                ->label(__('restic-backups::backups.pages.snapshots.header_actions.create_snapshot'))
+                ->icon('heroicon-o-play')
+                ->requiresConfirmation()
+                ->modalHeading(__('restic-backups::backups.pages.snapshots.header_actions.create_snapshot_modal_heading'))
+                ->modalDescription(__('restic-backups::backups.pages.snapshots.header_actions.create_snapshot_modal_description'))
+                ->action(function (): void {
+                    $lockInfo = app(OperationLock::class)->getInfo();
+
+                    if (is_array($lockInfo)) {
+                        $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
+
+                        if (! empty($lockInfo['type'])) {
+                            $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
+                                'type' => $lockInfo['type'],
+                            ]);
+                        }
+
+                        if (! empty($lockInfo['run_id'])) {
+                            $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
+                                'run_id' => $lockInfo['run_id'],
+                            ]);
+                        }
+
+                        Notification::make()
+                            ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
+                            ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.backup_waits'))
+                            ->warning()
+                            ->send();
+                    }
+
+                    RunBackupJob::dispatch([], 'manual', null, true, auth()->id());
+
+                    Notification::make()
+                        ->success()
+                        ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_create_queued'))
+                        ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_create_queued_body'))
+                        ->send();
+                }),
             Action::make('refresh')
                 ->label(__('restic-backups::backups.pages.snapshots.header_actions.refresh'))
                 ->icon('heroicon-o-arrow-path')
@@ -531,9 +584,167 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $recordsPerPage = $recordsPerPage > 0 ? $recordsPerPage : 25;
 
         $total = $records->count();
-        $items = $records->slice(($page - 1) * $recordsPerPage, $recordsPerPage)->values();
+        $items = $records
+            ->slice(($page - 1) * $recordsPerPage, $recordsPerPage)
+            ->values()
+            ->all();
+        $items = $this->attachArchiveStatus($items);
 
         return new LengthAwarePaginator($items, $total, $recordsPerPage, $page);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    protected function attachArchiveStatus(array $items): array
+    {
+        if ($items === []) {
+            return $items;
+        }
+
+        $snapshotIds = collect($items)
+            ->map(fn(array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($snapshotIds === []) {
+            foreach ($items as $index => $item) {
+                $items[$index]['archive'] = $this->buildArchiveState(null);
+            }
+
+            return $items;
+        }
+
+        $runs = BackupRun::query()
+            ->where('type', 'export_snapshot')
+            ->whereIn('meta->snapshot_id', $snapshotIds)
+            ->orderByDesc('id')
+            ->get();
+
+        $latestBySnapshot = [];
+
+        foreach ($runs as $run) {
+            $meta = is_array($run->meta) ? $run->meta : [];
+            $snapshotId = $this->normalizeScalar($meta['snapshot_id'] ?? null);
+
+            if ($snapshotId === null || isset($latestBySnapshot[$snapshotId])) {
+                continue;
+            }
+
+            $latestBySnapshot[$snapshotId] = $run;
+        }
+
+        foreach ($items as $index => $item) {
+            $snapshotId = $this->normalizeScalar($item['id'] ?? null);
+            $run = $snapshotId !== null ? ($latestBySnapshot[$snapshotId] ?? null) : null;
+            $items[$index]['archive'] = $this->buildArchiveState($run);
+        }
+
+        return $items;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function buildArchiveState(?BackupRun $run): array
+    {
+        if (! $run instanceof BackupRun) {
+            return ['status' => 'none'];
+        }
+
+        $status = (string) ($run->status ?? '');
+        $meta = is_array($run->meta) ? $run->meta : [];
+        $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+
+        $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
+        $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
+        $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
+
+        if ($status === 'success') {
+            if ($archivePath !== null && $archiveName !== null) {
+                if ($expiresAt instanceof Carbon && now()->greaterThan($expiresAt)) {
+                    return [
+                        'status' => 'expired',
+                        'expires_at' => $expiresAt->toIso8601String(),
+                        'run_id' => $run->getKey(),
+                    ];
+                }
+
+                $downloadUrl = URL::temporarySignedRoute(
+                    'restic-backups.exports.download',
+                    $this->resolveArchiveLinkExpiry($expiresAt),
+                    ['run' => $run->getKey()],
+                );
+
+                return [
+                    'status' => 'ready',
+                    'download_url' => $downloadUrl,
+                    'expires_at' => $expiresAt?->toIso8601String(),
+                    'run_id' => $run->getKey(),
+                ];
+            }
+
+            return [
+                'status' => 'failed',
+                'run_id' => $run->getKey(),
+            ];
+        }
+
+        if ($status === 'failed') {
+            return [
+                'status' => 'failed',
+                'run_id' => $run->getKey(),
+            ];
+        }
+
+        if ($status === 'running') {
+            return [
+                'status' => 'queue',
+                'run_id' => $run->getKey(),
+            ];
+        }
+
+        return [
+            'status' => 'queue',
+            'run_id' => $run->getKey(),
+        ];
+    }
+
+    protected function resolveArchiveLinkExpiry(?Carbon $expiresAt): Carbon
+    {
+        $defaultExpiry = now()->addMinutes(60);
+
+        if (! $expiresAt instanceof Carbon) {
+            return $defaultExpiry;
+        }
+
+        if ($expiresAt->lessThan($defaultExpiry) && $expiresAt->greaterThan(now())) {
+            return $expiresAt;
+        }
+
+        return $defaultExpiry;
+    }
+
+    protected function parseArchiveExpiresAt(mixed $value): ?Carbon
+    {
+        if ($value instanceof Carbon) {
+            return $value;
+        }
+
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     protected function loadSnapshots(bool $force = false, bool $notify = false): void
@@ -663,6 +874,99 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ->danger()
             ->body($body)
             ->send();
+    }
+
+    protected function resolveOperationTypeLabel(mixed $value, string $fallback): string
+    {
+        $type = $this->normalizeScalar($value);
+
+        if ($type === null) {
+            return $fallback;
+        }
+
+        $key = "restic-backups::backups.pages.snapshots.operation_types.{$type}";
+        $translated = __($key);
+
+        if ($translated !== $key) {
+            return $translated;
+        }
+
+        return Str::of($type)
+            ->replace(['_', '-'], ' ')
+            ->headline()
+            ->toString();
+    }
+
+    protected function resolveOperationStepLabel(mixed $value, string $fallback): string
+    {
+        $step = $this->normalizeScalar($value);
+
+        if ($step === null) {
+            return $fallback;
+        }
+
+        $key = "restic-backups::backups.pages.snapshots.operation_steps.{$step}";
+        $translated = __($key);
+
+        if ($translated !== $key) {
+            return $translated;
+        }
+
+        return Str::of($step)
+            ->replace(['_', '-'], ' ')
+            ->headline()
+            ->toString();
+    }
+
+    protected function formatLockTimestamp(mixed $value, string $fallback): string
+    {
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return $fallback;
+        }
+
+        try {
+            return Carbon::parse($value)
+                ->locale(app()->getLocale())
+                ->translatedFormat('M d, Y H:i:s');
+        } catch (Throwable) {
+            return $value;
+        }
+    }
+
+    protected function formatRelativeTime(mixed $value, string $fallback): string
+    {
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return $fallback;
+        }
+
+        try {
+            return Carbon::parse($value)
+                ->locale(app()->getLocale())
+                ->diffForHumans();
+        } catch (Throwable) {
+            return $value;
+        }
+    }
+
+    protected function formatActivityLine(string $activity, bool $showSpinner): HtmlString
+    {
+        $label = __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.last_activity', [
+            'activity' => $activity,
+        ]);
+
+        if (! $showSpinner) {
+            return new HtmlString(e($label));
+        }
+
+        $spinner = generate_loading_indicator_html()->toHtml();
+
+        return new HtmlString(
+            '<span class="rb-inline">' . $spinner . '<span>' . e($label) . '</span></span>',
+        );
     }
 
     protected function formatSnapshotErrorDetails(string $stderr, int $exitCode): string

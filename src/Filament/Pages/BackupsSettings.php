@@ -486,7 +486,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->send();
                     }
 
-                    RunBackupJob::dispatch([], 'manual', null, true);
+                    RunBackupJob::dispatch([], 'manual', null, true, auth()->id());
 
                     Notification::make()
                         ->success()

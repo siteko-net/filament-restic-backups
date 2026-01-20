@@ -6,6 +6,7 @@ namespace Siteko\FilamentResticBackups\Filament\Pages;
 
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
+use Filament\Notifications\Notification;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
@@ -15,8 +16,10 @@ use Filament\Tables\Table;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\Builder;
-use Siteko\FilamentResticBackups\Models\BackupRun;
 use Illuminate\Support\Facades\URL;
+use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
+use Siteko\FilamentResticBackups\Models\BackupRun;
+use Siteko\FilamentResticBackups\Support\OperationLock;
 
 class BackupsRuns extends BaseBackupsPage implements HasTable
 {
@@ -165,6 +168,54 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
             ->components([
                 EmbeddedTable::make(),
             ]);
+    }
+
+    /**
+     * @return array<Action>
+     */
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('create_snapshot')
+                ->label(__('restic-backups::backups.pages.runs.header_actions.create_snapshot'))
+                ->icon('heroicon-o-play')
+                ->requiresConfirmation()
+                ->modalHeading(__('restic-backups::backups.pages.runs.header_actions.create_snapshot_modal_heading'))
+                ->modalDescription(__('restic-backups::backups.pages.runs.header_actions.create_snapshot_modal_description'))
+                ->action(function (): void {
+                    $lockInfo = app(OperationLock::class)->getInfo();
+
+                    if (is_array($lockInfo)) {
+                        $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
+
+                        if (! empty($lockInfo['type'])) {
+                            $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
+                                'type' => $lockInfo['type'],
+                            ]);
+                        }
+
+                        if (! empty($lockInfo['run_id'])) {
+                            $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
+                                'run_id' => $lockInfo['run_id'],
+                            ]);
+                        }
+
+                        Notification::make()
+                            ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
+                            ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.backup_waits'))
+                            ->warning()
+                            ->send();
+                    }
+
+                    RunBackupJob::dispatch([], 'manual', null, true, auth()->id());
+
+                    Notification::make()
+                        ->success()
+                        ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_create_queued'))
+                        ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_create_queued_body'))
+                        ->send();
+                }),
+        ];
     }
 
     protected function formatDuration(BackupRun $record): ?string
