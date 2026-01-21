@@ -215,6 +215,8 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 'meta' => $meta,
             ]);
 
+            $meta = $this->scheduleArchiveCleanup($run, $meta, $expiresAt);
+
             $this->notifyArchiveReady($run, $meta);
         } catch (Throwable $exception) {
             if ($run instanceof BackupRun) {
@@ -421,6 +423,53 @@ class ExportSnapshotArchiveJob implements ShouldQueue
         }, $command);
 
         return implode(' ', $escaped);
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     * @return array<string, mixed>
+     */
+    protected function scheduleArchiveCleanup(BackupRun $run, array $meta, Carbon $expiresAt): array
+    {
+        if (! $expiresAt->greaterThan(now())) {
+            return $meta;
+        }
+
+        $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+
+        if (! $this->shouldScheduleCleanup()) {
+            $export['cleanup_scheduled'] = false;
+            $meta['export'] = $export;
+            $run->update(['meta' => $meta]);
+
+            return $meta;
+        }
+
+        $pending = CleanupExportArchiveJob::dispatch((int) $run->getKey())
+            ->delay($expiresAt);
+
+        if ($this->queue) {
+            $pending->onQueue($this->queue);
+        }
+
+        if ($this->connection) {
+            $pending->onConnection($this->connection);
+        }
+
+        $export['cleanup_scheduled'] = true;
+        $export['cleanup_scheduled_at'] = $expiresAt->toIso8601String();
+        $meta['export'] = $export;
+
+        $run->update(['meta' => $meta]);
+
+        return $meta;
+    }
+
+    protected function shouldScheduleCleanup(): bool
+    {
+        $connection = $this->connection ?? config('queue.default');
+
+        return $connection !== 'sync';
     }
 
     /**

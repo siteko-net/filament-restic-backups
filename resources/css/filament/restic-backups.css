@@ -103,6 +103,10 @@
     color: #6b7280;
 }
 
+.rb-text--sm {
+    font-size: 0.75rem;
+}
+
 .rb-inline {
     display: flex;
     flex-wrap: wrap;
@@ -124,6 +128,11 @@
     border: 0;
     padding: 0;
     cursor: pointer;
+}
+
+.rb-tooltip {
+    cursor: pointer;
+    user-select: none;
 }
 
 .rb-summary {

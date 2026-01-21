@@ -60,6 +60,7 @@ class ResticBackupsServiceProvider extends ServiceProvider
 
         $this->commands([
             \Siteko\FilamentResticBackups\Console\RunBackupCommand::class,
+            \Siteko\FilamentResticBackups\Console\CleanupExportArchivesCommand::class,
             \Siteko\FilamentResticBackups\Console\CleanupRollbackDirsCommand::class,
             \Siteko\FilamentResticBackups\Console\UnlockOperationCommand::class,
         ]);

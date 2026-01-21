@@ -122,6 +122,7 @@ class RunBackupJob implements ShouldQueue
                 $projectRoot,
                 $backupTags,
                 [
+                    'json' => true,
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
@@ -133,6 +134,7 @@ class RunBackupJob implements ShouldQueue
             );
 
             $meta['backup'] = $this->formatProcessResult($backupResult);
+            $this->attachBackupSummary($meta, $backupResult);
             $run->update(['meta' => $meta]);
 
             if ($backupResult->exitCode !== 0) {
@@ -1024,6 +1026,12 @@ class RunBackupJob implements ShouldQueue
      */
     protected function extractSnapshotId(array $meta): ?string
     {
+        $snapshotId = $this->normalizeScalar($meta['snapshot_id'] ?? null);
+
+        if ($snapshotId !== null) {
+            return $snapshotId;
+        }
+
         $backupMeta = is_array($meta['backup'] ?? null) ? $meta['backup'] : [];
 
         $snapshotId = $this->normalizeScalar($backupMeta['snapshot_id'] ?? null);
@@ -1045,6 +1053,109 @@ class RunBackupJob implements ShouldQueue
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    protected function attachBackupSummary(array &$meta, \Siteko\FilamentResticBackups\DTO\ProcessResult $result): void
+    {
+        $summary = $this->extractBackupSummary($result->parsedJson);
+
+        if ($summary !== null) {
+            $backupMeta = is_array($meta['backup'] ?? null) ? $meta['backup'] : [];
+            $backupMeta['summary'] = $summary;
+            $meta['backup'] = $backupMeta;
+        }
+
+        $snapshotId = $this->extractSnapshotIdFromBackupEvents($result->parsedJson);
+
+        if ($snapshotId === null) {
+            return;
+        }
+
+        $backupMeta = is_array($meta['backup'] ?? null) ? $meta['backup'] : [];
+        $backupMeta['snapshot_id'] = $snapshotId;
+        $meta['backup'] = $backupMeta;
+        $meta['snapshot_id'] = $snapshotId;
+    }
+
+    /**
+     * @param  array<string, mixed> | null  $payload
+     * @return array<string, mixed> | null
+     */
+    protected function extractBackupSummary(?array $payload): ?array
+    {
+        $events = $this->normalizeJsonEvents($payload);
+
+        if ($events === []) {
+            return null;
+        }
+
+        $summary = null;
+
+        foreach ($events as $event) {
+            if (! is_array($event)) {
+                continue;
+            }
+
+            if (($event['message_type'] ?? null) === 'summary') {
+                $nested = $event['summary'] ?? null;
+                $summary = is_array($nested) ? $nested : $event;
+            }
+        }
+
+        if (! is_array($summary)) {
+            return null;
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  array<string, mixed> | null  $payload
+     */
+    protected function extractSnapshotIdFromBackupEvents(?array $payload): ?string
+    {
+        $events = $this->normalizeJsonEvents($payload);
+
+        foreach ($events as $event) {
+            if (! is_array($event)) {
+                continue;
+            }
+
+            $snapshotId = $this->normalizeScalar($event['snapshot_id'] ?? null);
+
+            if ($snapshotId === null) {
+                $nested = $event['summary'] ?? null;
+                if (is_array($nested)) {
+                    $snapshotId = $this->normalizeScalar($nested['snapshot_id'] ?? null);
+                }
+            }
+
+            if ($snapshotId !== null) {
+                return $snapshotId;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed> | null  $payload
+     * @return array<int, array<string, mixed>>
+     */
+    protected function normalizeJsonEvents(?array $payload): array
+    {
+        if (! is_array($payload) || $payload === []) {
+            return [];
+        }
+
+        if (array_is_list($payload)) {
+            return array_values(array_filter($payload, 'is_array'));
+        }
+
+        return [$payload];
     }
 
     protected function resolveNotificationUser(int $userId): ?Authenticatable

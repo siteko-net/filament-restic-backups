@@ -131,6 +131,11 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.time'))
                     ->dateTime()
                     ->sortable(),
+                TextColumn::make('size')
+                    ->label(__('restic-backups::backups.pages.snapshots.table.columns.size'))
+                    ->state(fn(array $record): ?int => $record['size_bytes'] ?? null)
+                    ->formatStateUsing(fn($state): string => $this->formatBytes(is_numeric($state) ? (int) $state : null))
+                    ->toggleable(),
                 TextColumn::make('tags')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.tags'))
                     ->state(fn(array $record): array => $record['tags'] ?? [])
@@ -589,6 +594,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ->values()
             ->all();
         $items = $this->attachArchiveStatus($items);
+        $items = $this->attachSnapshotSizes($items);
 
         return new LengthAwarePaginator($items, $total, $recordsPerPage, $page);
     }
@@ -647,6 +653,117 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     }
 
     /**
+     * @param  array<int, array<string, mixed>>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    protected function attachSnapshotSizes(array $items): array
+    {
+        if ($items === []) {
+            return $items;
+        }
+
+        $snapshotIds = collect($items)
+            ->map(fn(array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($snapshotIds === []) {
+            foreach ($items as $index => $item) {
+                $items[$index]['size_bytes'] = null;
+            }
+
+            return $items;
+        }
+
+        $runs = BackupRun::query()
+            ->where('type', 'backup')
+            ->where('status', 'success')
+            ->whereIn('meta->snapshot_id', $snapshotIds)
+            ->orderByDesc('id')
+            ->get();
+
+        $latestBySnapshot = [];
+
+        foreach ($runs as $run) {
+            $meta = is_array($run->meta) ? $run->meta : [];
+            $snapshotId = $this->normalizeScalar($meta['snapshot_id'] ?? null);
+
+            if ($snapshotId === null || isset($latestBySnapshot[$snapshotId])) {
+                continue;
+            }
+
+            $latestBySnapshot[$snapshotId] = $run;
+        }
+
+        foreach ($items as $index => $item) {
+            $snapshotId = $this->normalizeScalar($item['id'] ?? null);
+            $summary = null;
+
+            if ($snapshotId !== null) {
+                $summary = $this->extractSummaryFromBackupRun($latestBySnapshot[$snapshotId] ?? null);
+            }
+
+            if ($summary === null) {
+                $summary = $this->extractSummaryFromSnapshotRecord($item);
+            }
+
+            $items[$index]['size_bytes'] = $this->extractSnapshotSizeBytes($summary);
+        }
+
+        return $items;
+    }
+
+    /**
+     * @return array<string, mixed> | null
+     */
+    protected function extractSummaryFromBackupRun(?BackupRun $run): ?array
+    {
+        if (! $run instanceof BackupRun) {
+            return null;
+        }
+
+        $meta = is_array($run->meta) ? $run->meta : [];
+        $backup = is_array($meta['backup'] ?? null) ? $meta['backup'] : [];
+        $summary = $backup['summary'] ?? null;
+
+        return is_array($summary) && $summary !== [] ? $summary : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $record
+     * @return array<string, mixed> | null
+     */
+    protected function extractSummaryFromSnapshotRecord(array $record): ?array
+    {
+        $raw = is_array($record['raw'] ?? null) ? $record['raw'] : [];
+        $summary = $raw['summary'] ?? null;
+
+        return is_array($summary) && $summary !== [] ? $summary : null;
+    }
+
+    /**
+     * @param  array<string, mixed> | null  $summary
+     */
+    protected function extractSnapshotSizeBytes(?array $summary): ?int
+    {
+        if (! is_array($summary)) {
+            return null;
+        }
+
+        $keys = ['total_bytes_processed', 'total_size', 'total_size_bytes', 'total_size_in_bytes'];
+
+        foreach ($keys as $key) {
+            if (isset($summary[$key]) && is_numeric($summary[$key])) {
+                return (int) $summary[$key];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     protected function buildArchiveState(?BackupRun $run): array
@@ -661,14 +778,31 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
         $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
+        $archiveSize = $this->normalizeScalar($export['archive_size'] ?? null);
+        $archiveSize = is_numeric($archiveSize) ? (int) $archiveSize : null;
         $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
+        $deletedAt = $this->normalizeScalar($export['deleted_at'] ?? null);
+
+        if ($deletedAt !== null) {
+            return [
+                'status' => 'deleted',
+                'run_id' => $run->getKey(),
+                'size_bytes' => null,
+            ];
+        }
 
         if ($status === 'success') {
             if ($archivePath !== null && $archiveName !== null) {
                 if ($expiresAt instanceof Carbon && now()->greaterThan($expiresAt)) {
                     return [
+                        'size_bytes' => $archiveSize,
                         'status' => 'expired',
                         'expires_at' => $expiresAt->toIso8601String(),
+                        'delete_url' => URL::temporarySignedRoute(
+                            'restic-backups.exports.delete',
+                            $this->resolveArchiveLinkExpiry($expiresAt),
+                            ['run' => $run->getKey()],
+                        ),
                         'run_id' => $run->getKey(),
                     ];
                 }
@@ -678,16 +812,24 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     $this->resolveArchiveLinkExpiry($expiresAt),
                     ['run' => $run->getKey()],
                 );
+                $deleteUrl = URL::temporarySignedRoute(
+                    'restic-backups.exports.delete',
+                    $this->resolveArchiveLinkExpiry($expiresAt),
+                    ['run' => $run->getKey()],
+                );
 
                 return [
+                    'size_bytes' => $archiveSize,
                     'status' => 'ready',
                     'download_url' => $downloadUrl,
+                    'delete_url' => $deleteUrl,
                     'expires_at' => $expiresAt?->toIso8601String(),
                     'run_id' => $run->getKey(),
                 ];
             }
 
             return [
+                'size_bytes' => $archiveSize,
                 'status' => 'failed',
                 'run_id' => $run->getKey(),
             ];
@@ -695,6 +837,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         if ($status === 'failed') {
             return [
+                'size_bytes' => $archiveSize,
                 'status' => 'failed',
                 'run_id' => $run->getKey(),
             ];
@@ -702,12 +845,14 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         if ($status === 'running') {
             return [
+                'size_bytes' => $archiveSize,
                 'status' => 'queue',
                 'run_id' => $run->getKey(),
             ];
         }
 
         return [
+            'size_bytes' => $archiveSize,
             'status' => 'queue',
             'run_id' => $run->getKey(),
         ];
