@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\URL;
 use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Models\BackupRun;
+use Siteko\FilamentResticBackups\Support\BackupsTimezone;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 
 class BackupsRuns extends BaseBackupsPage implements HasTable
@@ -30,6 +31,8 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
     protected static ?string $navigationLabel = 'Runs';
 
     protected static ?string $title = 'Backup Runs';
+
+    protected ?string $displayTimezone = null;
 
     public static function getNavigationSort(): ?int
     {
@@ -54,11 +57,11 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
             ->columns([
                 TextColumn::make('started_at')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.started'))
-                    ->dateTime()
+                    ->dateTime(timezone: fn(): string => $this->displayTimezone())
                     ->sortable(),
                 TextColumn::make('finished_at')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.finished'))
-                    ->dateTime()
+                    ->dateTime(timezone: fn(): string => $this->displayTimezone())
                     ->toggleable(),
                 TextColumn::make('type')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.type'))
@@ -137,6 +140,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                     ->modalSubmitAction(false)
                     ->modalContent(fn(BackupRun $record) => view('restic-backups::runs.view', [
                         'record' => $record,
+                        'timezone' => $this->displayTimezone(),
                     ])),
                 Action::make('download')
                     ->label(__('restic-backups::backups.pages.runs.actions.download.label'))
@@ -256,5 +260,10 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
             'hours' => $hours,
             'minutes' => $remainingMinutes,
         ]);
+    }
+
+    protected function displayTimezone(): string
+    {
+        return $this->displayTimezone ??= BackupsTimezone::resolve();
     }
 }

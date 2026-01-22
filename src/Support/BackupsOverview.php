@@ -10,6 +10,7 @@ use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\BackupsTimezone;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Throwable;
 
@@ -26,8 +27,9 @@ class BackupsOverview
     {
         $settings = $this->getSettings();
         $projectRoot = $this->resolveProjectRoot($settings);
+        $timezone = BackupsTimezone::resolve($settings);
 
-        $repo = $this->getRepositoryOverview($settings, $force);
+        $repo = $this->getRepositoryOverview($settings, $force, $timezone);
         $runs = $this->getRuns();
         $system = $this->getSystemDiagnostics($projectRoot);
 
@@ -40,6 +42,7 @@ class BackupsOverview
             'repo' => $repo,
             'runs' => $runs,
             'system' => $system,
+            'timezone' => $timezone,
             'fetched_at' => now()->toDateTimeString(),
         ];
     }
@@ -70,7 +73,7 @@ class BackupsOverview
     /**
      * @return array<string, mixed>
      */
-    protected function getRepositoryOverview(?BackupSetting $settings, bool $force): array
+    protected function getRepositoryOverview(?BackupSetting $settings, bool $force, string $timezone): array
     {
         if (! $this->hasRepositoryConfiguration($settings)) {
             return [
@@ -104,7 +107,7 @@ class BackupsOverview
                     ];
                 }
 
-                $normalized = $this->normalizeSnapshots($snapshots);
+                $normalized = $this->normalizeSnapshots($snapshots, $timezone);
                 $lastSnapshot = $this->pickLatestSnapshot($normalized);
 
                 return [
@@ -245,7 +248,7 @@ class BackupsOverview
      * @param  array<int, array<string, mixed>>  $snapshots
      * @return array<int, array<string, mixed>>
      */
-    protected function normalizeSnapshots(array $snapshots): array
+    protected function normalizeSnapshots(array $snapshots, string $timezone): array
     {
         $normalized = [];
 
@@ -255,14 +258,14 @@ class BackupsOverview
             }
 
             $time = $snapshot['time'] ?? null;
-            $timeParsed = $time ? Carbon::parse($time) : null;
+            $timeParsed = $time ? Carbon::parse($time)->setTimezone($timezone) : null;
             $id = $this->normalizeScalar($snapshot['id'] ?? null);
             $shortId = $this->normalizeScalar($snapshot['short_id'] ?? null);
 
             $normalized[] = [
                 'id' => $id,
                 'short_id' => $shortId ?? ($id ? substr($id, 0, 8) : null),
-                'time' => $timeParsed?->toDateTimeString(),
+                'time' => $timeParsed?->format(BackupsTimezone::DEFAULT_FORMAT),
                 'time_unix' => $timeParsed?->getTimestamp(),
                 'hostname' => $this->normalizeScalar($snapshot['hostname'] ?? null),
                 'tags' => is_array($snapshot['tags'] ?? null) ? array_values($snapshot['tags']) : [],

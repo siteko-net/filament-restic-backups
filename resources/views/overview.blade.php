@@ -98,6 +98,16 @@
         : ($lockStatus === false
             ? [__('restic-backups::backups.views.overview.status.lock_not'), 'rb-badge rb-badge--ok']
             : [__('restic-backups::backups.views.overview.status.lock_unknown'), 'rb-badge rb-badge--warn']);
+
+    $timezone = $overview['timezone'] ?? \Siteko\FilamentResticBackups\Support\BackupsTimezone::resolve();
+    $formatDateTime = function ($value) use ($timezone, $notAvailable): string {
+        return \Siteko\FilamentResticBackups\Support\BackupsTimezone::format(
+            $value,
+            $timezone,
+            \Siteko\FilamentResticBackups\Support\BackupsTimezone::DEFAULT_FORMAT,
+            $notAvailable,
+        );
+    };
 @endphp
 
 <div class="rb-run-details">
@@ -111,11 +121,11 @@
             <div class="rb-text">
                 {{ __('restic-backups::backups.views.overview.labels.snapshots') }}: {{ $repo['snapshots_count'] ?? $notAvailable }}
             </div>
-            @if (! empty($lastSnapshot))
-                <div class="rb-text">
-                    {{ __('restic-backups::backups.views.overview.labels.last') }}: {{ $lastSnapshot['time'] ?? $notAvailable }}
-                    ({{ $lastSnapshot['short_id'] ?? $notAvailable }})
-                </div>
+                @if (! empty($lastSnapshot))
+                    <div class="rb-text">
+                        {{ __('restic-backups::backups.views.overview.labels.last') }}: {{ $formatDateTime($lastSnapshot['time'] ?? null) }}
+                        ({{ $lastSnapshot['short_id'] ?? $notAvailable }})
+                    </div>
                 @if (! empty($lastSnapshot['tags']))
                     <div class="rb-text">
                         {{ __('restic-backups::backups.views.overview.labels.tags') }}: {{ implode(', ', $lastSnapshot['tags']) }}
@@ -156,10 +166,10 @@
                     {{ __('restic-backups::backups.views.overview.labels.run_id') }}: {{ $lockInfo['run_id'] ?? $notAvailable }}
                 </div>
                 <div class="rb-text">
-                    {{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $lockInfo['started_at'] ?? $notAvailable }}
+                    {{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $formatDateTime($lockInfo['started_at'] ?? null) }}
                 </div>
                 <div class="rb-text">
-                    {{ __('restic-backups::backups.views.overview.labels.heartbeat') }}: {{ $lockInfo['last_heartbeat_at'] ?? $notAvailable }}
+                    {{ __('restic-backups::backups.views.overview.labels.heartbeat') }}: {{ $formatDateTime($lockInfo['last_heartbeat_at'] ?? null) }}
                 </div>
                 <div class="rb-text">
                     {{ __('restic-backups::backups.views.overview.labels.host') }}: {{ $lockInfo['hostname'] ?? $notAvailable }}
@@ -186,7 +196,7 @@
                 @php([$label, $class] = $statusBadge($lastBackup?->status ?? null))
                 <span class="{{ $class }}">{{ $label }}</span>
             </div>
-            <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $lastBackup?->started_at ?? $notAvailable }}</div>
+            <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $formatDateTime($lastBackup?->started_at) }}</div>
             <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.duration') }}: {{ $formatDuration($lastBackup) }}</div>
             <div class="rb-text rb-muted">
                 {{ __('restic-backups::backups.views.overview.labels.trigger') }}:
@@ -200,7 +210,7 @@
                 @php([$label, $class] = $statusBadge($lastRestore?->status ?? null))
                 <span class="{{ $class }}">{{ $label }}</span>
             </div>
-            <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $lastRestore?->started_at ?? $notAvailable }}</div>
+            <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $formatDateTime($lastRestore?->started_at) }}</div>
             <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.duration') }}: {{ $formatDuration($lastRestore) }}</div>
             <div class="rb-text rb-muted">
                 {{ __('restic-backups::backups.views.overview.labels.scope') }}:
@@ -214,7 +224,7 @@
                 @php([$label, $class] = $statusBadge($lastFailed?->status ?? null))
                 <span class="{{ $class }}">{{ $label }}</span>
             </div>
-            <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $lastFailed?->started_at ?? $notAvailable }}</div>
+            <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.started') }}: {{ $formatDateTime($lastFailed?->started_at) }}</div>
             <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.duration') }}: {{ $formatDuration($lastFailed) }}</div>
             <div class="rb-text rb-muted">
                 {{ data_get($lastFailed?->meta, 'error_message', $dash) }}

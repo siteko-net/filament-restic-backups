@@ -75,6 +75,7 @@ return [
                     'path_helper' => 'Auto-generated: restic/<app>/<env>.',
                     'uri_label' => 'Repository URI',
                     'password_label' => 'Repository password',
+                    'password_helper' => 'Required on first setup. Store it safely.',
                 ],
                 'retention' => [
                     'title' => 'Retention policy',

@@ -80,24 +80,27 @@ class RunBackupJob implements ShouldQueue
             $projectRoot = $this->resolveProjectRoot($settings);
             $connectionName = $this->connectionName ?? (string) config('database.default');
             $dumpPath = storage_path('app/_backup/db.sql.gz');
+            $pathConfig = $this->resolvePathConfig($settings);
+            $backupPaths = $this->resolveBackupPaths($projectRoot, $pathConfig);
 
-        $meta = [
-            'trigger' => $this->normalizeTrigger($this->trigger),
-            'tags' => $this->normalizeTags($this->tags),
-            'project_root' => $projectRoot,
-            'dump_path' => $dumpPath,
-            'connection' => $connectionName,
-            'host' => $this->hostname(),
-            'app_env' => (string) config('app.env'),
-        ];
+            $meta = [
+                'trigger' => $this->normalizeTrigger($this->trigger),
+                'tags' => $this->normalizeTags($this->tags),
+                'project_root' => $projectRoot,
+                'dump_path' => $dumpPath,
+                'connection' => $connectionName,
+                'host' => $this->hostname(),
+                'app_env' => (string) config('app.env'),
+                'paths' => $pathConfig,
+            ];
 
-        if ($this->userId !== null) {
-            $meta['initiator_user_id'] = $this->userId;
-        }
+            if ($this->userId !== null) {
+                $meta['initiator_user_id'] = $this->userId;
+            }
 
-        $run = BackupRun::query()->create([
-            'type' => 'backup',
-            'status' => 'running',
+            $run = BackupRun::query()->create([
+                'type' => 'backup',
+                'status' => 'running',
                 'started_at' => now(),
                 'meta' => $meta,
             ]);
@@ -119,13 +122,14 @@ class RunBackupJob implements ShouldQueue
             $backupTags = $this->buildTags($meta['tags'], $meta['trigger']);
             $meta['tags'] = $backupTags;
             $backupResult = $runner->backup(
-                $projectRoot,
+                $backupPaths,
                 $backupTags,
                 [
                     'json' => true,
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'exclude' => $pathConfig['exclude'] ?? [],
                     'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
                         $lockHandle->heartbeat(array_merge(['step' => $step], $context));
                     },
@@ -284,6 +288,35 @@ class RunBackupJob implements ShouldQueue
         return $projectRoot;
     }
 
+    /**
+     * @return array{include: array<int, string>, exclude: array<int, string>}
+     */
+    protected function resolvePathConfig(BackupSetting $settings): array
+    {
+        $paths = is_array($settings->paths) ? $settings->paths : [];
+
+        $include = $this->normalizePathList($paths['include'] ?? []);
+        $exclude = $this->normalizePathList($paths['exclude'] ?? []);
+
+        return [
+            'include' => $include,
+            'exclude' => $exclude,
+        ];
+    }
+
+    /**
+     * @param  array{include: array<int, string>, exclude: array<int, string>}  $pathConfig
+     * @return array<int, string>
+     */
+    protected function resolveBackupPaths(string $projectRoot, array $pathConfig): array
+    {
+        if (! empty($pathConfig['include'])) {
+            return $pathConfig['include'];
+        }
+
+        return [$projectRoot];
+    }
+
     protected function normalizeTrigger(?string $trigger): string
     {
         $trigger = $this->normalizeScalar($trigger) ?? 'manual';
@@ -352,6 +385,37 @@ class RunBackupJob implements ShouldQueue
         $host = gethostname();
 
         return is_string($host) && $host !== '' ? $host : 'unknown';
+    }
+
+    /**
+     * @param  array<int, mixed>  $paths
+     * @return array<int, string>
+     */
+    protected function normalizePathList(array $paths): array
+    {
+        $normalized = [];
+
+        foreach ($paths as $path) {
+            if (! is_string($path) && ! is_numeric($path)) {
+                continue;
+            }
+
+            $path = trim((string) $path);
+
+            if ($path === '') {
+                continue;
+            }
+
+            $path = ltrim($path, "/\\");
+
+            if ($path === '') {
+                continue;
+            }
+
+            $normalized[] = $path;
+        }
+
+        return array_values(array_unique($normalized));
     }
 
     protected function dumpDatabase(string $connectionName, string $dumpPath): array

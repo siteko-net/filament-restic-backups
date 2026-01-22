@@ -14,6 +14,15 @@
     $notAvailable = __('restic-backups::backups.views.placeholders.not_available');
     $yesLabel = __('restic-backups::backups.views.values.yes');
     $noLabel = __('restic-backups::backups.views.values.no');
+    $timezone = $timezone ?? \Siteko\FilamentResticBackups\Support\BackupsTimezone::resolve();
+    $formatDateTime = function ($value) use ($timezone, $notAvailable): string {
+        return \Siteko\FilamentResticBackups\Support\BackupsTimezone::format(
+            $value,
+            $timezone,
+            \Siteko\FilamentResticBackups\Support\BackupsTimezone::DEFAULT_FORMAT,
+            $notAvailable,
+        );
+    };
 
     if ($record->started_at && $record->finished_at) {
         $duration = $record->started_at->diffInSeconds($record->finished_at);
@@ -59,11 +68,11 @@
         </div>
         <div class="rb-stack">
             <div class="rb-label">{{ __('restic-backups::backups.views.runs.labels.started') }}</div>
-            <div class="rb-value">{{ $record->started_at }}</div>
+            <div class="rb-value">{{ $formatDateTime($record->started_at) }}</div>
         </div>
         <div class="rb-stack">
             <div class="rb-label">{{ __('restic-backups::backups.views.runs.labels.finished') }}</div>
-            <div class="rb-value">{{ $record->finished_at }}</div>
+            <div class="rb-value">{{ $formatDateTime($record->finished_at) }}</div>
         </div>
         <div class="rb-stack">
             <div class="rb-label">{{ __('restic-backups::backups.views.runs.labels.duration') }}</div>

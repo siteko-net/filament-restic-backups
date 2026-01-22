@@ -353,8 +353,10 @@ class BackupsSettings extends BaseBackupsPage
                             ->dehydrated(false),
                         TextInput::make('restic_password')
                             ->label(__('restic-backups::backups.pages.settings.sections.repository.password_label'))
+                            ->required(fn(): bool => $this->normalizeScalar($this->record?->restic_password) === null)
                             ->password()
                             ->placeholder('******')
+                            ->helperText(__('restic-backups::backups.pages.settings.sections.repository.password_helper'))
                             ->dehydrated(fn(string | null $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);

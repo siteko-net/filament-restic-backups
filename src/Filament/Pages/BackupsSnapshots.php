@@ -38,6 +38,7 @@ use Siteko\FilamentResticBackups\Jobs\RunRestoreJob;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\BackupsTimezone;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
@@ -63,6 +64,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     public ?int $snapshotExitCode = null;
 
     public ?int $snapshotFetchedAt = null;
+
+    protected ?string $displayTimezone = null;
 
     /**
      * @var array<string, mixed> | null
@@ -129,7 +132,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->toggleable(),
                 TextColumn::make('time')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.time'))
-                    ->dateTime()
+                    ->dateTime(timezone: fn(): string => $this->displayTimezone())
                     ->sortable(),
                 TextColumn::make('size')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.size'))
@@ -1071,13 +1074,15 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return $fallback;
         }
 
-        try {
-            return Carbon::parse($value)
-                ->locale(app()->getLocale())
-                ->translatedFormat('M d, Y H:i:s');
-        } catch (Throwable) {
+        $timestamp = BackupsTimezone::normalize($value, $this->displayTimezone());
+
+        if (! $timestamp) {
             return $value;
         }
+
+        return $timestamp
+            ->locale(app()->getLocale())
+            ->translatedFormat('M d, Y H:i:s');
     }
 
     protected function formatRelativeTime(mixed $value, string $fallback): string
@@ -1088,13 +1093,15 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return $fallback;
         }
 
-        try {
-            return Carbon::parse($value)
-                ->locale(app()->getLocale())
-                ->diffForHumans();
-        } catch (Throwable) {
+        $timestamp = BackupsTimezone::normalize($value, $this->displayTimezone());
+
+        if (! $timestamp) {
             return $value;
         }
+
+        return $timestamp
+            ->locale(app()->getLocale())
+            ->diffForHumans();
     }
 
     protected function formatActivityLine(string $activity, bool $showSpinner): HtmlString
@@ -1606,11 +1613,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return '—';
         }
 
-        try {
-            return Carbon::parse($value)->format('Y-m-d H:i:s');
-        } catch (Throwable) {
-            return $value;
-        }
+        return BackupsTimezone::format($value, $this->displayTimezone(), BackupsTimezone::DEFAULT_FORMAT, $value);
     }
 
     protected function formatTags(array $tags): string
@@ -1626,11 +1629,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return 0;
         }
 
-        try {
-            return Carbon::parse($value)->getTimestamp();
-        } catch (Throwable) {
-            return 0;
-        }
+        $timestamp = BackupsTimezone::normalize($value, $this->displayTimezone());
+
+        return $timestamp?->getTimestamp() ?? 0;
     }
 
     protected function parseDateToTimestamp(string $value, string $mode): ?int
@@ -1641,9 +1642,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return null;
         }
 
-        try {
-            $date = Carbon::parse($value);
-        } catch (Throwable) {
+        $date = BackupsTimezone::normalize($value, $this->displayTimezone());
+        if (! $date) {
             return null;
         }
 
@@ -1654,6 +1654,11 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         }
 
         return $date->getTimestamp();
+    }
+
+    protected function displayTimezone(): string
+    {
+        return $this->displayTimezone ??= BackupsTimezone::resolve();
     }
 
     /**

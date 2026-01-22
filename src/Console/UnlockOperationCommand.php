@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Siteko\FilamentResticBackups\Console;
 
 use Illuminate\Console\Command;
+use Siteko\FilamentResticBackups\Support\BackupsTimezone;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 
 class UnlockOperationCommand extends Command
@@ -21,16 +22,20 @@ class UnlockOperationCommand extends Command
         $info = $operationLock->getInfo();
         $staleSeconds = (int) $this->option('stale-seconds');
         $isStale = $info !== null ? $operationLock->isStale($staleSeconds) : null;
+        $timezone = BackupsTimezone::resolve();
+        $formatDateTime = function (?string $value) use ($timezone): string {
+            return BackupsTimezone::format($value, $timezone, BackupsTimezone::DEFAULT_FORMAT, 'n/a');
+        };
 
         if (is_array($info)) {
             $this->line('Current lock info:');
             $this->line('  Type: ' . ($info['type'] ?? 'n/a'));
             $this->line('  Run ID: ' . ($info['run_id'] ?? 'n/a'));
-            $this->line('  Started: ' . ($info['started_at'] ?? 'n/a'));
-            $this->line('  Heartbeat: ' . ($info['last_heartbeat_at'] ?? 'n/a'));
+            $this->line('  Started: ' . $formatDateTime($info['started_at'] ?? null));
+            $this->line('  Heartbeat: ' . $formatDateTime($info['last_heartbeat_at'] ?? null));
             $this->line('  Host: ' . ($info['hostname'] ?? 'n/a'));
             $this->line('  PID: ' . ($info['pid'] ?? 'n/a'));
-            $this->line('  Expires: ' . ($info['expires_at'] ?? 'n/a'));
+            $this->line('  Expires: ' . $formatDateTime($info['expires_at'] ?? null));
             if ($isStale === true) {
                 $this->warn('Heartbeat looks stale.');
             }

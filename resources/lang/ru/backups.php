@@ -75,6 +75,7 @@ return [
                     'path_helper' => 'Автоматически: restic/<app>/<env>.',
                     'uri_label' => 'URI репозитория',
                     'password_label' => 'Пароль репозитория',
+                    'password_helper' => 'Обязателен при первичной настройке. Храните в надежном месте.',
                 ],
                 'retention' => [
                     'title' => 'Политика хранения',
