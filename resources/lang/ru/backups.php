@@ -267,6 +267,8 @@ return [
                 'repository_issue' => [
                     'title' => 'Проблема репозитория',
                     'description' => 'Не удалось загрузить снапшоты из restic.',
+                    'locked_title' => 'Репозиторий занят',
+                    'locked_description' => 'Restic удерживает блокировку на время выполнения операции.',
                     'unknown_error' => 'Неизвестная ошибка',
                     'open_settings' => 'Открыть настройки',
                 ],
@@ -315,6 +317,8 @@ return [
                 'restic_not_configured' => 'Репозиторий restic не настроен.',
                 'unable_to_load' => 'Не удалось загрузить снапшоты.',
                 'unable_to_load_from_restic' => 'Не удалось загрузить снапшоты из restic.',
+                'repository_locked' => 'Репозиторий заблокирован выполняемой операцией.',
+                'repository_locked_details' => 'Снапшоты будут доступны после завершения. Если блокировка зависла, выполните `php artisan restic-backups:unlock` или `restic unlock`.',
                 'exit_code' => 'Код выхода: :code.',
                 'restic_exit_code' => 'Restic завершился с кодом :code.',
                 'truncated' => '...[усечено]',

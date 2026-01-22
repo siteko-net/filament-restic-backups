@@ -88,7 +88,7 @@ class BackupsOverview
             Cache::forget(self::CACHE_KEY);
         }
 
-        return Cache::remember(self::CACHE_KEY, self::CACHE_TTL_SECONDS, function () use ($settings): array {
+        return Cache::remember(self::CACHE_KEY, self::CACHE_TTL_SECONDS, function () use ($settings, $timezone): array {
             try {
                 $runner = new ResticRunner($settings);
                 $result = $runner->snapshots();

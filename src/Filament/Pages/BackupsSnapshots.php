@@ -65,6 +65,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
     public ?int $snapshotFetchedAt = null;
 
+    public bool $snapshotErrorIsLock = false;
+
     protected ?string $displayTimezone = null;
 
     /**
@@ -447,11 +449,19 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         }
 
         if ($this->snapshotError !== null) {
-            $components[] = Section::make(__('restic-backups::backups.pages.snapshots.sections.repository_issue.title'))
-                ->description(__('restic-backups::backups.pages.snapshots.sections.repository_issue.description'))
+            $issueTitle = $this->snapshotErrorIsLock
+                ? __('restic-backups::backups.pages.snapshots.sections.repository_issue.locked_title')
+                : __('restic-backups::backups.pages.snapshots.sections.repository_issue.title');
+            $issueDescription = $this->snapshotErrorIsLock
+                ? __('restic-backups::backups.pages.snapshots.sections.repository_issue.locked_description')
+                : __('restic-backups::backups.pages.snapshots.sections.repository_issue.description');
+            $issueColor = $this->snapshotErrorIsLock ? 'warning' : 'danger';
+
+            $components[] = Section::make($issueTitle)
+                ->description($issueDescription)
                 ->schema([
                     Text::make(fn(): string => $this->snapshotError ?? __('restic-backups::backups.pages.snapshots.sections.repository_issue.unknown_error'))
-                        ->color('danger'),
+                        ->color($issueColor),
                     Text::make(fn(): string => $this->snapshotErrorDetails ?? '')
                         ->color('gray'),
                     ActionsComponent::make([
@@ -907,6 +917,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $this->snapshotExitCode = null;
         $this->snapshotError = null;
         $this->snapshotErrorDetails = null;
+        $this->snapshotErrorIsLock = false;
 
         try {
             $result = app(ResticRunner::class)->snapshots();
@@ -935,6 +946,20 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         if ($result->exitCode !== 0 || ! is_array($result->parsedJson)) {
             $this->snapshotRecords = [];
             $details = $this->formatSnapshotErrorDetails($result->stderr, $result->exitCode);
+            if ($this->isResticLockError($result->stderr)
+                || $this->isResticLockError($result->stdout)
+                || $this->isResticLockError($details)
+            ) {
+                $this->setSnapshotError(
+                    __('restic-backups::backups.pages.snapshots.errors.repository_locked'),
+                    __('restic-backups::backups.pages.snapshots.errors.repository_locked_details'),
+                    $result->exitCode,
+                    $notify,
+                    true,
+                );
+
+                return;
+            }
             $this->setSnapshotError(
                 __('restic-backups::backups.pages.snapshots.errors.unable_to_load_from_restic'),
                 $details,
@@ -998,11 +1023,18 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         return $normalized;
     }
 
-    protected function setSnapshotError(string $message, ?string $details, ?int $exitCode, bool $notify): void
+    protected function setSnapshotError(
+        string $message,
+        ?string $details,
+        ?int $exitCode,
+        bool $notify,
+        bool $isLock = false,
+    ): void
     {
         $this->snapshotError = $message;
         $this->snapshotErrorDetails = $this->sanitizeErrorDetails($details);
         $this->snapshotExitCode = $exitCode;
+        $this->snapshotErrorIsLock = $isLock;
 
         if (! $notify) {
             return;
@@ -1017,11 +1049,18 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             $body = $body !== '' ? $prefix . ' ' . $body : $prefix;
         }
 
-        Notification::make()
+        $notification = Notification::make()
             ->title($message)
-            ->danger()
             ->body($body)
-            ->send();
+            ->duration(10000);
+
+        if ($isLock) {
+            $notification->warning();
+        } else {
+            $notification->danger();
+        }
+
+        $notification->send();
     }
 
     protected function resolveOperationTypeLabel(mixed $value, string $fallback): string
@@ -1149,6 +1188,21 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         }
 
         return substr($value, 0, self::ERROR_SNIPPET_LIMIT) . PHP_EOL . __('restic-backups::backups.pages.snapshots.errors.truncated');
+    }
+
+    protected function isResticLockError(?string $message): bool
+    {
+        $message = strtolower(trim((string) $message));
+
+        if ($message === '') {
+            return false;
+        }
+
+        return str_contains($message, 'repository is already locked')
+            || str_contains($message, 'already locked exclusively')
+            || str_contains($message, 'unable to create lock')
+            || str_contains($message, 'lock was created at')
+            || str_contains($message, 'unlock command can be used');
     }
 
     protected function formatPathsSummary(array $paths): string

@@ -267,6 +267,8 @@ return [
                 'repository_issue' => [
                     'title' => 'Repository issue',
                     'description' => 'Unable to load snapshots from restic.',
+                    'locked_title' => 'Repository is busy',
+                    'locked_description' => 'Restic holds an exclusive lock while operations are running.',
                     'unknown_error' => 'Unknown error',
                     'open_settings' => 'Open Settings',
                 ],
@@ -315,6 +317,8 @@ return [
                 'restic_not_configured' => 'Restic repository is not configured.',
                 'unable_to_load' => 'Unable to load snapshots.',
                 'unable_to_load_from_restic' => 'Unable to load snapshots from restic.',
+                'repository_locked' => 'Repository is locked by a running operation.',
+                'repository_locked_details' => 'Snapshots will appear after it finishes. If it is stuck, run `php artisan restic-backups:unlock` or `restic unlock`.',
                 'exit_code' => 'Exit code: :code.',
                 'restic_exit_code' => 'Restic exited with code :code.',
                 'truncated' => '...[truncated]',
