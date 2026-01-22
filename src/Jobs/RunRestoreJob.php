@@ -354,7 +354,7 @@ class RunRestoreJob implements ShouldQueue
 
             $step = 'stage_validate';
             $lockHandle->heartbeat(['step' => $step]);
-            $validateMeta = $this->validateStaging($stagingSwapDir, $scope);
+            $validateMeta = $this->validateStaging($stagingSwapDir, $scope, $snapshotInfo);
             $meta['steps']['stage_validate'] = $validateMeta;
             $run->update(['meta' => $meta]);
 
@@ -727,6 +727,7 @@ class RunRestoreJob implements ShouldQueue
                     'hostname' => $this->normalizeScalar($snapshot['hostname'] ?? null),
                     'tags' => $this->normalizeArray($snapshot['tags'] ?? []),
                     'paths' => $this->normalizeArray($snapshot['paths'] ?? []),
+                    'excludes' => $this->normalizeArray($snapshot['excludes'] ?? []),
                 ];
             }
         }
@@ -1396,10 +1397,17 @@ class RunRestoreJob implements ShouldQueue
         return $this->runProcess(['mv', $source, $destination], $cwd);
     }
 
-    protected function validateStaging(string $stagingDir, string $scope): array
+    /**
+     * @param  array<string, mixed>  $snapshotInfo
+     */
+    protected function validateStaging(string $stagingDir, string $scope, array $snapshotInfo): array
     {
         $start = microtime(true);
         $errors = [];
+        $warnings = [];
+
+        $excludes = $this->normalizeArray($snapshotInfo['excludes'] ?? []);
+        $vendorExcluded = $this->pathIsExcluded('vendor', $excludes);
 
         if (! is_dir($stagingDir)) {
             $errors[] = 'Staging directory was not found.';
@@ -1415,7 +1423,11 @@ class RunRestoreJob implements ShouldQueue
             }
 
             if (! is_file($stagingDir . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php')) {
-                $errors[] = 'vendor/autoload.php missing in staged project.';
+                if ($vendorExcluded) {
+                    $warnings[] = 'vendor directory was excluded from the snapshot; run composer install after restore.';
+                } else {
+                    $errors[] = 'vendor/autoload.php missing in staged project.';
+                }
             }
         }
 
@@ -1426,11 +1438,64 @@ class RunRestoreJob implements ShouldQueue
             }
         }
 
-        return [
+        $result = [
             'exit_code' => $errors === [] ? 0 : 1,
             'duration_ms' => (int) round((microtime(true) - $start) * 1000),
             'errors' => $errors,
         ];
+
+        if ($warnings !== []) {
+            $result['warnings'] = $warnings;
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  array<int, string>  $excludes
+     */
+    protected function pathIsExcluded(string $path, array $excludes): bool
+    {
+        $path = $this->normalizeExcludePattern($path);
+
+        if ($path === '') {
+            return false;
+        }
+
+        $prefix = $path . '/';
+
+        foreach ($excludes as $exclude) {
+            $pattern = $this->normalizeExcludePattern($exclude);
+
+            if ($pattern === '') {
+                continue;
+            }
+
+            if ($pattern === $path || str_starts_with($pattern, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function normalizeExcludePattern(string $value): string
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            return '';
+        }
+
+        $value = str_replace('\\', '/', $value);
+
+        while (str_starts_with($value, './')) {
+            $value = substr($value, 2);
+        }
+
+        $value = ltrim($value, '/');
+
+        return rtrim($value, '/');
     }
 
     protected function generateDownSecret(): string
