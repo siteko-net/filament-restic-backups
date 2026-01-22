@@ -310,6 +310,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->placeholder(__('restic-backups::backups.pages.settings.sections.storage.bucket.placeholder'))
                             ->helperText(__('restic-backups::backups.pages.settings.sections.storage.bucket.helper'))
                             ->visible(fn(): bool => $this->bucketManual || $this->bucketOptions === [])
+                            ->dehydratedWhenHidden()
                             ->nullable(),
                         Actions::make([
                             Action::make('refreshBuckets')
