@@ -2158,13 +2158,37 @@ class RunRestoreJob implements ShouldQueue
 
         $ignoreFlags = $this->buildIgnoreTableFlags($database, $prefix, $this->dumpExcludeTables());
         $command = $this->buildMysqlDumpCommand($baseCommand, $connectionParams, $optionalFlags, $ignoreFlags);
+        $columnStatisticsFlag = null;
         $result = $this->streamDumpProcess($command, $env, $dumpPath, 'mysql');
+
+        if (($result['exit_code'] ?? 1) !== 0
+            && $this->isMysqlDumpBinary($binary)
+            && $this->mysqlDumpNeedsColumnStatisticsDisabled((string) ($result['stderr'] ?? ''))
+        ) {
+            $columnStatisticsFlag = '--column-statistics=0';
+            $command = $this->buildMysqlDumpCommand(
+                $baseCommand,
+                $connectionParams,
+                array_merge($optionalFlags, [$columnStatisticsFlag]),
+                $ignoreFlags,
+            );
+            $result = $this->streamDumpProcess($command, $env, $dumpPath, 'mysql');
+
+            if (($result['exit_code'] ?? 1) === 0) {
+                return $this->appendMysqlDumpColumnStatisticsWarning($result);
+            }
+        }
 
         if (($result['exit_code'] ?? 1) !== 0) {
             $reducedFlags = $this->filterMysqlDumpFlags($optionalFlags, (string) ($result['stderr'] ?? ''));
 
             if ($reducedFlags !== $optionalFlags) {
-                $command = $this->buildMysqlDumpCommand($baseCommand, $connectionParams, $reducedFlags, $ignoreFlags);
+                $finalFlags = $reducedFlags;
+                if ($columnStatisticsFlag !== null) {
+                    $finalFlags[] = $columnStatisticsFlag;
+                }
+
+                $command = $this->buildMysqlDumpCommand($baseCommand, $connectionParams, $finalFlags, $ignoreFlags);
                 $retry = $this->streamDumpProcess($command, $env, $dumpPath, 'mysql');
 
                 if (($retry['exit_code'] ?? 1) === 0) {
@@ -2173,13 +2197,29 @@ class RunRestoreJob implements ShouldQueue
                         $this->mysqlDumpWarningsFromFlags($optionalFlags, $reducedFlags),
                     ));
 
+                    if ($columnStatisticsFlag !== null) {
+                        $retry = $this->appendMysqlDumpColumnStatisticsWarning($retry);
+                    }
+
                     return $retry;
                 }
 
-                return $this->acceptMysqlPermissionWarnings($retry, $optionalFlags, $reducedFlags);
+                $retry = $this->acceptMysqlPermissionWarnings($retry, $optionalFlags, $reducedFlags);
+
+                if (($retry['exit_code'] ?? 1) === 0 && $columnStatisticsFlag !== null) {
+                    $retry = $this->appendMysqlDumpColumnStatisticsWarning($retry);
+                }
+
+                return $retry;
             }
 
-            return $this->acceptMysqlPermissionWarnings($result, $optionalFlags, $optionalFlags);
+            $result = $this->acceptMysqlPermissionWarnings($result, $optionalFlags, $optionalFlags);
+
+            if (($result['exit_code'] ?? 1) === 0 && $columnStatisticsFlag !== null) {
+                $result = $this->appendMysqlDumpColumnStatisticsWarning($result);
+            }
+
+            return $result;
         }
 
         return $result;
@@ -2548,6 +2588,34 @@ class RunRestoreJob implements ShouldQueue
         }
 
         return $flags;
+    }
+
+    protected function mysqlDumpNeedsColumnStatisticsDisabled(string $stderr): bool
+    {
+        $message = strtolower($stderr);
+
+        return str_contains($message, 'column_statistics');
+    }
+
+    protected function isMysqlDumpBinary(string $binary): bool
+    {
+        $binaryName = strtolower(basename($binary));
+
+        return str_contains($binaryName, 'mysqldump');
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    protected function appendMysqlDumpColumnStatisticsWarning(array $result): array
+    {
+        $result['warnings'] = array_values(array_merge(
+            $result['warnings'] ?? [],
+            ['Mysql dump retried with --column-statistics=0.'],
+        ));
+
+        return $result;
     }
 
     /**
