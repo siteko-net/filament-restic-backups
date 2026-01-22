@@ -1,8 +1,20 @@
 {
     "name": "siteko/filament-restic-backups",
+    "description": "Restic backups management for Laravel 12 + Filament.",
     "type": "library",
-    "description": "Restic Backups skeleton package for Filament.",
     "license": "MIT",
+    "keywords": [
+        "laravel",
+        "filament",
+        "restic",
+        "backups",
+        "s3"
+    ],
+    "homepage": "https://github.com/siteko-net/filament-restic-backups",
+    "support": {
+        "issues": "https://github.com/siteko-net/filament-restic-backups/issues",
+        "source": "https://github.com/siteko-net/filament-restic-backups"
+    },
     "require": {
         "php": "^8.2",
         "aws/aws-sdk-php": "^3.0",
@@ -21,6 +33,7 @@
             ]
         }
     },
-    "minimum-stability": "stable",
-    "prefer-stable": true
+    "config": {
+        "sort-packages": true
+    }
 }
