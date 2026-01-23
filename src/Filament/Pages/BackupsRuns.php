@@ -13,7 +13,9 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Filament\Support\Exceptions\Halt;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\URL;
@@ -174,6 +176,8 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
         return $schema
             ->components([
                 EmbeddedTable::make(),
+                ViewComponent::make('restic-backups::partials.operation-poll')
+                    ->extraAttributes(['class' => 'hidden']),
             ]);
     }
 
@@ -189,10 +193,11 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                 ->requiresConfirmation()
                 ->modalHeading(__('restic-backups::backups.pages.runs.header_actions.create_snapshot_modal_heading'))
                 ->modalDescription(__('restic-backups::backups.pages.runs.header_actions.create_snapshot_modal_description'))
+                ->disabled(fn(): bool => $this->hasRunningOperations())
                 ->action(function (): void {
                     $lockInfo = app(OperationLock::class)->getInfo();
 
-                    if (is_array($lockInfo)) {
+                    if ($this->hasRunningOperations()) {
                         $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
 
                         if (! empty($lockInfo['type'])) {
@@ -209,9 +214,11 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
 
                         Notification::make()
                             ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
-                            ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.backup_waits'))
+                            ->body($message)
                             ->warning()
                             ->send();
+
+                        throw new Halt();
                     }
 
                     RunBackupJob::dispatch([], 'manual', null, true, auth()->id());

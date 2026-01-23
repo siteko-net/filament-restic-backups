@@ -4,6 +4,9 @@ namespace Siteko\FilamentResticBackups\Filament\Pages;
 
 use Filament\Facades\Filament;
 use Filament\Pages\Page;
+use Siteko\FilamentResticBackups\Models\BackupRun;
+use Siteko\FilamentResticBackups\Support\OperationLock;
+use Throwable;
 
 abstract class BaseBackupsPage extends Page
 {
@@ -50,5 +53,20 @@ abstract class BaseBackupsPage extends Page
     protected static function baseNavigationSort(): int
     {
         return (int) config('restic-backups.navigation.sort', 30);
+    }
+
+    protected function hasRunningOperations(): bool
+    {
+        $lockInfo = app(OperationLock::class)->getInfo();
+
+        if (is_array($lockInfo)) {
+            return true;
+        }
+
+        try {
+            return BackupRun::query()->where('status', 'running')->exists();
+        } catch (Throwable) {
+            return false;
+        }
     }
 }

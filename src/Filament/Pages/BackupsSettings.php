@@ -464,10 +464,11 @@ class BackupsSettings extends BaseBackupsPage
                 ->requiresConfirmation()
                 ->modalHeading(__('restic-backups::backups.pages.settings.actions.run_backup.modal_heading'))
                 ->modalDescription(__('restic-backups::backups.pages.settings.actions.run_backup.modal_description'))
+                ->disabled(fn(): bool => $this->hasRunningOperations())
                 ->action(function (): void {
                     $lockInfo = app(OperationLock::class)->getInfo();
 
-                    if (is_array($lockInfo)) {
+                    if ($this->hasRunningOperations()) {
                         $message = __('restic-backups::backups.pages.settings.notifications.operation_running');
 
                         if (! empty($lockInfo['type'])) {
@@ -484,9 +485,11 @@ class BackupsSettings extends BaseBackupsPage
 
                         Notification::make()
                             ->title(__('restic-backups::backups.pages.settings.notifications.operation_in_progress'))
-                            ->body($message . ' ' . __('restic-backups::backups.pages.settings.notifications.backup_waits'))
+                            ->body($message)
                             ->warning()
                             ->send();
+
+                        throw new Halt();
                     }
 
                     RunBackupJob::dispatch([], 'manual', null, true, auth()->id());

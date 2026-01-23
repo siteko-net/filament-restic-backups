@@ -123,7 +123,41 @@ public function panel(Panel $panel): Panel
 
 ---
 
+## Важно: планировщик и уведомления
+
+Без этих настроек **не будет** ночных запусков и уведомлений в админке.
+
+### Планировщик Laravel (cron)
+
+Ночные запуски и очистка экспортов идут через Laravel Scheduler. Сначала зарегистрируйте задачи (например, в `routes/console.php`):
+
+```php
+use Illuminate\Support\Facades\Schedule;
+
+Schedule::command('restic-backups:run --trigger=schedule')->dailyAt('02:00');
+Schedule::command('restic-backups:cleanup-exports')->daily();
+```
+
+Затем настройте выполнение расписания:
+
+```bash
+* * * * * php /path/to/project/artisan schedule:run >> /dev/null 2>&1
+```
+
+или использовать `php artisan schedule:work` под supervisor/systemd.
+
+### Database Notifications в Filament
+
+Для уведомлений в админке включите Database Notifications в нужной панели:
+
+```php
+$panel->databaseNotifications();
+```
+
+И убедитесь, что таблица `notifications` существует (Laravel: `php artisan notifications:table` + `php artisan migrate`).
+
+---
+
 ## Проверка
 
 Filament → группа “Backups” → страницы Overview / Settings.
-

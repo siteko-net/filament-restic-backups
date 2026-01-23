@@ -88,7 +88,7 @@ class BackupsExports extends BaseBackupsPage
                     Action::make('downloadFull')
                         ->label(__('restic-backups::backups.pages.exports.actions.full.label'))
                         ->icon('heroicon-o-arrow-down-tray')
-                        ->disabled(fn(): bool => $this->snapshotError !== null || $this->latestSnapshotId() === null || $this->isOperationRunning())
+                        ->disabled(fn(): bool => $this->snapshotError !== null || $this->latestSnapshotId() === null || $this->hasRunningOperations())
                         ->action(function (): void {
                             $snapshotId = $this->latestSnapshotId();
 
@@ -101,9 +101,7 @@ class BackupsExports extends BaseBackupsPage
                                 throw new Halt();
                             }
 
-                            $lockInfo = app(OperationLock::class)->getInfo();
-
-                            if (is_array($lockInfo)) {
+                            if ($this->hasRunningOperations()) {
                                 Notification::make()
                                     ->title(__('restic-backups::backups.pages.exports.notifications.operation_in_progress'))
                                     ->body(__('restic-backups::backups.pages.exports.notifications.operation_running'))
@@ -129,7 +127,7 @@ class BackupsExports extends BaseBackupsPage
                     Action::make('downloadDelta')
                         ->label(__('restic-backups::backups.pages.exports.actions.delta.label'))
                         ->icon('heroicon-o-arrow-down-tray')
-                        ->disabled(fn(): bool => $this->snapshotError !== null || ! $this->baselineIsAvailable() || $this->isOperationRunning())
+                        ->disabled(fn(): bool => $this->snapshotError !== null || ! $this->baselineIsAvailable() || $this->hasRunningOperations())
                         ->action(function (): void {
                             if (! $this->baselineIsAvailable()) {
                                 Notification::make()
@@ -140,9 +138,7 @@ class BackupsExports extends BaseBackupsPage
                                 throw new Halt();
                             }
 
-                            $lockInfo = app(OperationLock::class)->getInfo();
-
-                            if (is_array($lockInfo)) {
+                            if ($this->hasRunningOperations()) {
                                 Notification::make()
                                     ->title(__('restic-backups::backups.pages.exports.notifications.operation_in_progress'))
                                     ->body(__('restic-backups::backups.pages.exports.notifications.operation_running'))

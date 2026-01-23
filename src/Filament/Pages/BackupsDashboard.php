@@ -9,6 +9,7 @@ use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Actions as ActionsComponent;
 use Filament\Schemas\Schema;
 use Filament\Schemas\Components\View as ViewComponent;
+use Filament\Support\Exceptions\Halt;
 use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Support\BackupsOverview;
 use Siteko\FilamentResticBackups\Support\OperationLock;
@@ -57,10 +58,11 @@ class BackupsDashboard extends BaseBackupsPage
                         ->requiresConfirmation()
                         ->modalHeading(__('restic-backups::backups.pages.dashboard.actions.run_backup.modal_heading'))
                         ->modalDescription(__('restic-backups::backups.pages.dashboard.actions.run_backup.modal_description'))
+                        ->disabled(fn(): bool => $this->hasRunningOperations())
                         ->action(function (): void {
                             $lockInfo = app(OperationLock::class)->getInfo();
 
-                            if (is_array($lockInfo)) {
+                            if ($this->hasRunningOperations()) {
                                 $message = __('restic-backups::backups.pages.dashboard.notifications.operation_running');
 
                                 if (! empty($lockInfo['type'])) {
@@ -77,9 +79,11 @@ class BackupsDashboard extends BaseBackupsPage
 
                                 Notification::make()
                                     ->title(__('restic-backups::backups.pages.dashboard.notifications.operation_in_progress'))
-                                    ->body($message . ' ' . __('restic-backups::backups.pages.dashboard.notifications.backup_waits'))
+                                    ->body($message)
                                     ->warning()
                                     ->send();
+
+                                throw new Halt();
                             }
 
                             RunBackupJob::dispatch([], 'manual', null, true, auth()->id());
@@ -107,6 +111,8 @@ class BackupsDashboard extends BaseBackupsPage
                     ->viewData([
                         'overview' => $this->overview ?? [],
                     ]),
+                ViewComponent::make('restic-backups::partials.operation-poll')
+                    ->extraAttributes(['class' => 'hidden']),
             ]);
     }
 
