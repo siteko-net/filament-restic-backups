@@ -156,8 +156,8 @@ return [
             ],
         ],
         'exports' => [
-            'navigation_label' => 'Disaster Recovery',
-            'title' => 'Disaster Recovery Exports',
+            'navigation_label' => 'Recovery Exports',
+            'title' => 'Recovery Exports',
             'actions' => [
                 'full' => [
                     'label' => 'Download FULL (Complete archive)',

@@ -11,6 +11,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Jobs\ExportDisasterRecoveryDeltaJob;
@@ -20,10 +21,12 @@ use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\BackupsTimezone;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Throwable;
+use function Filament\Support\generate_loading_indicator_html;
 
 class BackupsExports extends BaseBackupsPage
 {
     private const SNAPSHOT_CACHE_SECONDS = 10;
+    private const OPERATION_POLL_SECONDS = 10;
 
     protected static ?string $slug = 'backups/exports';
 
@@ -56,7 +59,7 @@ class BackupsExports extends BaseBackupsPage
 
     public static function getNavigationSort(): ?int
     {
-        return static::baseNavigationSort() + 5;
+        return static::baseNavigationSort() + 4;
     }
 
     public static function getNavigationLabel(): string
@@ -85,7 +88,7 @@ class BackupsExports extends BaseBackupsPage
                     Action::make('downloadFull')
                         ->label(__('restic-backups::backups.pages.exports.actions.full.label'))
                         ->icon('heroicon-o-arrow-down-tray')
-                        ->disabled(fn(): bool => $this->snapshotError !== null || $this->latestSnapshotId() === null)
+                        ->disabled(fn(): bool => $this->snapshotError !== null || $this->latestSnapshotId() === null || $this->isOperationRunning())
                         ->action(function (): void {
                             $snapshotId = $this->latestSnapshotId();
 
@@ -106,6 +109,8 @@ class BackupsExports extends BaseBackupsPage
                                     ->body(__('restic-backups::backups.pages.exports.notifications.operation_running'))
                                     ->warning()
                                     ->send();
+
+                                throw new Halt();
                             }
 
                             ExportDisasterRecoveryFullJob::dispatch(
@@ -124,7 +129,7 @@ class BackupsExports extends BaseBackupsPage
                     Action::make('downloadDelta')
                         ->label(__('restic-backups::backups.pages.exports.actions.delta.label'))
                         ->icon('heroicon-o-arrow-down-tray')
-                        ->disabled(fn(): bool => $this->snapshotError !== null || ! $this->baselineIsAvailable())
+                        ->disabled(fn(): bool => $this->snapshotError !== null || ! $this->baselineIsAvailable() || $this->isOperationRunning())
                         ->action(function (): void {
                             if (! $this->baselineIsAvailable()) {
                                 Notification::make()
@@ -143,6 +148,8 @@ class BackupsExports extends BaseBackupsPage
                                     ->body(__('restic-backups::backups.pages.exports.notifications.operation_running'))
                                     ->warning()
                                     ->send();
+
+                                throw new Halt();
                             }
 
                             ExportDisasterRecoveryDeltaJob::dispatch(
@@ -157,7 +164,41 @@ class BackupsExports extends BaseBackupsPage
                                 ->success()
                                 ->send();
                         }),
-                ]),
+                ])
+                    ->poll(self::OPERATION_POLL_SECONDS . 's'),
+                Section::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.title', [
+                    'type' => $this->resolveOperationTypeLabel(
+                        $this->operationType(),
+                        __('restic-backups::backups.pages.exports.placeholders.not_available'),
+                    ),
+                ]))
+                    ->description(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.description'))
+                    ->schema([
+                        Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.started_at', [
+                            'started_at' => $this->formatLockTimestamp(
+                                $this->operationStartedAt(),
+                                __('restic-backups::backups.pages.exports.placeholders.not_available'),
+                            ),
+                        ])),
+                        Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.step', [
+                            'step' => $this->resolveOperationStepLabel(
+                                $this->operationStep(),
+                                __('restic-backups::backups.pages.exports.placeholders.not_available'),
+                            ),
+                        ])),
+                        Text::make(fn(): HtmlString => $this->formatActivityLine(
+                            $this->formatRelativeTime(
+                                $this->operationLastActivityAt(),
+                                __('restic-backups::backups.pages.exports.placeholders.not_available'),
+                            ),
+                            ! $this->operationIsStale(),
+                        )),
+                        Text::make(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.stale_warning'))
+                            ->color('danger')
+                            ->visible(fn(): bool => $this->operationIsStale()),
+                    ])
+                    ->visible(fn(): bool => $this->isOperationRunning())
+                    ->poll(self::OPERATION_POLL_SECONDS . 's'),
                 Section::make(__('restic-backups::backups.pages.exports.sections.baseline.title'))
                     ->description(__('restic-backups::backups.pages.exports.sections.baseline.description'))
                     ->columns(1)
@@ -371,6 +412,156 @@ class BackupsExports extends BaseBackupsPage
         }
 
         return null;
+    }
+
+    protected function isOperationRunning(): bool
+    {
+        return $this->operationInfo() !== null;
+    }
+
+    protected function operationIsStale(): bool
+    {
+        if (! $this->isOperationRunning()) {
+            return false;
+        }
+
+        return app(OperationLock::class)->isStale();
+    }
+
+    /**
+     * @return array<string, mixed> | null
+     */
+    protected function operationInfo(): ?array
+    {
+        $info = app(OperationLock::class)->getInfo();
+
+        return is_array($info) ? $info : null;
+    }
+
+    protected function operationType(): ?string
+    {
+        $info = $this->operationInfo();
+
+        return $this->normalizeScalar($info['type'] ?? null);
+    }
+
+    protected function operationStartedAt(): ?string
+    {
+        $info = $this->operationInfo();
+
+        return $this->normalizeScalar($info['started_at'] ?? null);
+    }
+
+    protected function operationLastActivityAt(): ?string
+    {
+        $info = $this->operationInfo();
+
+        return $this->normalizeScalar($info['last_heartbeat_at'] ?? null);
+    }
+
+    protected function operationStep(): ?string
+    {
+        $info = $this->operationInfo();
+        $context = is_array($info['context'] ?? null) ? $info['context'] : [];
+
+        return $this->normalizeScalar($context['step'] ?? null);
+    }
+
+    protected function resolveOperationTypeLabel(mixed $value, string $fallback): string
+    {
+        $type = $this->normalizeScalar($value);
+
+        if ($type === null) {
+            return $fallback;
+        }
+
+        $key = "restic-backups::backups.pages.snapshots.operation_types.{$type}";
+        $translated = __($key);
+
+        if ($translated !== $key) {
+            return $translated;
+        }
+
+        return Str::of($type)
+            ->replace(['_', '-'], ' ')
+            ->headline()
+            ->toString();
+    }
+
+    protected function resolveOperationStepLabel(mixed $value, string $fallback): string
+    {
+        $step = $this->normalizeScalar($value);
+
+        if ($step === null) {
+            return $fallback;
+        }
+
+        $key = "restic-backups::backups.pages.snapshots.operation_steps.{$step}";
+        $translated = __($key);
+
+        if ($translated !== $key) {
+            return $translated;
+        }
+
+        return Str::of($step)
+            ->replace(['_', '-'], ' ')
+            ->headline()
+            ->toString();
+    }
+
+    protected function formatLockTimestamp(mixed $value, string $fallback): string
+    {
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return $fallback;
+        }
+
+        $timestamp = BackupsTimezone::normalize($value, $this->displayTimezone());
+
+        if (! $timestamp) {
+            return $value;
+        }
+
+        return $timestamp
+            ->locale(app()->getLocale())
+            ->translatedFormat('M d, Y H:i:s');
+    }
+
+    protected function formatRelativeTime(mixed $value, string $fallback): string
+    {
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return $fallback;
+        }
+
+        $timestamp = BackupsTimezone::normalize($value, $this->displayTimezone());
+
+        if (! $timestamp) {
+            return $value;
+        }
+
+        return $timestamp
+            ->locale(app()->getLocale())
+            ->diffForHumans();
+    }
+
+    protected function formatActivityLine(string $activity, bool $showSpinner): HtmlString
+    {
+        $label = __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.last_activity', [
+            'activity' => $activity,
+        ]);
+
+        if (! $showSpinner) {
+            return new HtmlString(e($label));
+        }
+
+        $spinner = generate_loading_indicator_html()->toHtml();
+
+        return new HtmlString(
+            '<span class="rb-inline">' . $spinner . '<span>' . e($label) . '</span></span>',
+        );
     }
 
     protected function formatTimestamp(?string $value, string $fallback): string

@@ -80,7 +80,7 @@ class BackupsSettings extends BaseBackupsPage
 
     public static function getNavigationSort(): ?int
     {
-        return static::baseNavigationSort() + 4;
+        return static::baseNavigationSort() + 5;
     }
 
     public static function getNavigationLabel(): string
