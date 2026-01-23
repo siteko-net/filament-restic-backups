@@ -29,7 +29,7 @@ class CleanupExportArchiveJob implements ShouldQueue
     {
         $run = BackupRun::query()->find($this->runId);
 
-        if (! $run instanceof BackupRun || $run->type !== 'export_snapshot') {
+        if (! $run instanceof BackupRun || ! in_array($run->type, ['export_snapshot', 'export_full', 'export_delta'], true)) {
             return;
         }
 

@@ -102,8 +102,8 @@ return [
                     'include_placeholder' => 'storage/app',
                     'exclude_label' => 'Исключить пути',
                     'exclude_helper' => 'Не исключайте storage/app/_backup, иначе не будет дампа БД.',
-                    'exclude_placeholder' => 'vendor',
-                    'restore_defaults' => 'Восстановить исключения по умолчанию',
+                    'exclude_placeholder' => 'storage/logs',
+                    'recommended_defaults' => 'Применить рекомендованные исключения',
                 ],
             ],
             'actions' => [
@@ -153,6 +153,61 @@ return [
             ],
             'placeholders' => [
                 'not_available' => 'н/д',
+            ],
+        ],
+        'exports' => [
+            'navigation_label' => 'Аварийное восстановление',
+            'title' => 'Архивы аварийного восстановления',
+            'actions' => [
+                'full' => [
+                    'label' => 'Скачать FULL (Полный архив)',
+                ],
+                'delta' => [
+                    'label' => 'Скачать DELTA (Изменения с FULL)',
+                ],
+            ],
+            'sections' => [
+                'baseline' => [
+                    'title' => 'Базовый FULL',
+                    'description' => 'Базовый снапшот для дельта-архивов.',
+                    'snapshot' => 'Базовый снапшот: :id',
+                    'created_at' => 'Создан: :time',
+                    'status' => 'Статус: :status',
+                ],
+                'latest' => [
+                    'title' => 'Последний снапшот',
+                    'description' => 'Экспорт всегда использует последний снапшот.',
+                    'snapshot' => 'Последний снапшот: :id',
+                    'time' => 'Время: :time',
+                    'ok' => 'Снапшот выглядит готовым для экспорта.',
+                    'warn_excludes' => 'Внимание: в снапшоте исключены vendor или public/build.',
+                ],
+            ],
+            'status' => [
+                'available' => 'Доступен',
+                'missing' => 'Не найден в репозитории',
+            ],
+            'placeholders' => [
+                'not_set' => 'не задан',
+                'not_available' => 'н/д',
+            ],
+            'notifications' => [
+                'snapshot_missing' => 'Последний снапшот не найден.',
+                'baseline_missing' => 'Базовый снапшот не найден.',
+                'operation_in_progress' => 'Операция выполняется',
+                'operation_running' => 'Выполняется другая операция.',
+                'full_queued' => 'FULL экспорт в очереди',
+                'full_queued_body' => 'FULL экспорт поставлен в очередь и будет выполнен в фоне.',
+                'delta_queued' => 'DELTA экспорт в очереди',
+                'delta_queued_body' => 'DELTA экспорт поставлен в очередь и будет выполнен в фоне.',
+            ],
+            'errors' => [
+                'restic_not_configured' => 'Репозиторий restic не настроен.',
+                'unable_to_load' => 'Не удалось загрузить снапшоты.',
+                'unable_to_load_from_restic' => 'Не удалось загрузить снапшоты из restic.',
+            ],
+            'header_actions' => [
+                'refresh' => 'Обновить',
             ],
         ],
         'snapshots' => [
@@ -276,6 +331,8 @@ return [
             'operation_types' => [
                 'backup' => 'Создание снапшота',
                 'export_snapshot' => 'Экспорт снапшота',
+                'export_full' => 'Экспорт FULL',
+                'export_delta' => 'Экспорт DELTA',
                 'forget_snapshot' => 'Удаление снапшота',
                 'restore' => 'Восстановление',
             ],
@@ -283,6 +340,7 @@ return [
                 'dump' => 'Дамп базы данных',
                 'restic_backup' => 'Бэкап restic',
                 'retention' => 'Очистка по политике',
+                'restic_diff' => 'Сравнение restic',
                 'restic_restore' => 'Скачивание из хранилища',
                 'pack_tar_gz' => 'Упаковка архива',
                 'forget_prune' => 'Удаление и prune',
@@ -417,6 +475,8 @@ return [
                         'forget_snapshot' => 'Удаление снапшота',
                         'restore' => 'Восстановление',
                         'export_snapshot' => 'Экспорт снапшота',
+                        'export_full' => 'Экспорт FULL',
+                        'export_delta' => 'Экспорт DELTA',
                     ],
                     'started_at' => 'Дата начала',
                     'from' => 'С',

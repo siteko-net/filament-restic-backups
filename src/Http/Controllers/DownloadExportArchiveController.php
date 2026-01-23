@@ -13,7 +13,7 @@ class DownloadExportArchiveController
 {
     public function __invoke(Request $request, BackupRun $run): BinaryFileResponse
     {
-        if ($run->type !== 'export_snapshot') {
+        if (! in_array($run->type, ['export_snapshot', 'export_full', 'export_delta'], true)) {
             abort(404);
         }
 

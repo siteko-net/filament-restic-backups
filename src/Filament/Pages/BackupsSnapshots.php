@@ -815,6 +815,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             'restic-backups.exports.delete',
                             $this->resolveArchiveLinkExpiry($expiresAt),
                             ['run' => $run->getKey()],
+                            absolute: false,
                         ),
                         'run_id' => $run->getKey(),
                     ];
@@ -824,11 +825,13 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     'restic-backups.exports.download',
                     $this->resolveArchiveLinkExpiry($expiresAt),
                     ['run' => $run->getKey()],
+                    absolute: false,
                 );
                 $deleteUrl = URL::temporarySignedRoute(
                     'restic-backups.exports.delete',
                     $this->resolveArchiveLinkExpiry($expiresAt),
                     ['run' => $run->getKey()],
+                    absolute: false,
                 );
 
                 return [

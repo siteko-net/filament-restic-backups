@@ -36,7 +36,7 @@ class CleanupExportArchivesCommand extends Command
         $removed = 0;
 
         $runs = BackupRun::query()
-            ->where('type', 'export_snapshot')
+            ->whereIn('type', ['export_snapshot', 'export_full', 'export_delta'])
             ->orderBy('id')
             ->get();
 

@@ -42,13 +42,11 @@ class BackupsSettings extends BaseBackupsPage
      * @var array<int, string>
      */
     private const DEFAULT_EXCLUDE_PATHS = [
-        'vendor',
         'node_modules',
         '.git',
         'storage/framework',
         'storage/logs',
         'bootstrap/cache',
-        'public/build',
         'public/hot',
     ];
 
@@ -422,13 +420,15 @@ class BackupsSettings extends BaseBackupsPage
                             ->helperText(__('restic-backups::backups.pages.settings.sections.paths.exclude_helper'))
                             ->placeholder(__('restic-backups::backups.pages.settings.sections.paths.exclude_placeholder'))
                             ->suggestions([
-                                'vendor',
                                 'node_modules',
+                                'storage/framework',
                                 'storage/logs',
+                                'bootstrap/cache',
+                                'public/hot',
                             ]),
                         Actions::make([
                             Action::make('restoreExcludeDefaults')
-                                ->label(__('restic-backups::backups.pages.settings.sections.paths.restore_defaults'))
+                                ->label(__('restic-backups::backups.pages.settings.sections.paths.recommended_defaults'))
                                 ->action('restoreExcludeDefaults'),
                         ]),
                     ]),

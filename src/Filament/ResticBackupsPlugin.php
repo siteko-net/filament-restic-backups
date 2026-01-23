@@ -10,6 +10,7 @@ use Filament\Support\Facades\FilamentView;
 use Filament\View\PanelsRenderHook;
 use Illuminate\Support\HtmlString;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsDashboard;
+use Siteko\FilamentResticBackups\Filament\Pages\BackupsExports;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsRuns;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsSnapshots;
 use Siteko\FilamentResticBackups\Filament\Pages\BackupsSettings;
@@ -36,6 +37,7 @@ class ResticBackupsPlugin implements Plugin
             BackupsDashboard::class,
             BackupsSettings::class,
             BackupsSnapshots::class,
+            BackupsExports::class,
             BackupsRuns::class,
         ]);
 

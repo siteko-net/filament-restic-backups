@@ -24,6 +24,8 @@ class BackupSetting extends Model
         'schedule',
         'paths',
         'project_root',
+        'baseline_snapshot_id',
+        'baseline_created_at',
     ];
 
     protected $casts = [
@@ -33,6 +35,7 @@ class BackupSetting extends Model
         'retention' => 'array',
         'schedule' => 'array',
         'paths' => 'array',
+        'baseline_created_at' => 'datetime',
     ];
 
     protected $hidden = [
@@ -101,18 +104,18 @@ class BackupSetting extends Model
             'paths' => [
                 'include' => [],
                 'exclude' => [
-                    'vendor',
                     'node_modules',
                     '.git',
                     'storage/framework',
                     'storage/logs',
                     'bootstrap/cache',
-                    'public/build',
                     'public/hot',
                 ],
             ],
             'project_root' => config('restic-backups.paths.project_root', base_path()),
             'repository_prefix' => static::computeRepositoryPrefix(),
+            'baseline_snapshot_id' => null,
+            'baseline_created_at' => null,
         ];
     }
 }

@@ -195,6 +195,30 @@ class ResticRunner
     /**
      * @param  array<string, mixed>  $options
      */
+    public function diff(string $fromSnapshot, string $toSnapshot, array $options = []): ProcessResult
+    {
+        $fromSnapshot = trim($fromSnapshot);
+        $toSnapshot = trim($toSnapshot);
+
+        if ($fromSnapshot === '' || $toSnapshot === '') {
+            throw new ResticConfigurationException(['snapshot_id'], 'Snapshot IDs are required for diff.');
+        }
+
+        $expectsJson = (bool) ($options['json'] ?? false);
+        unset($options['json']);
+
+        $command = ['diff', $fromSnapshot, $toSnapshot];
+
+        if ($expectsJson) {
+            $command[] = '--json';
+        }
+
+        return $this->run($command, options: $options, expectsJson: $expectsJson);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
     public function dump(string $snapshotId, string $filePath, string $targetPath, array $options = []): ProcessResult
     {
         $snapshotId = trim($snapshotId);

@@ -113,6 +113,8 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                         'forget_snapshot' => __('restic-backups::backups.pages.runs.table.filters.type_options.forget_snapshot'),
                         'restore' => __('restic-backups::backups.pages.runs.table.filters.type_options.restore'),
                         'export_snapshot' => __('restic-backups::backups.pages.runs.table.filters.type_options.export_snapshot'),
+                        'export_full' => __('restic-backups::backups.pages.runs.table.filters.type_options.export_full'),
+                        'export_delta' => __('restic-backups::backups.pages.runs.table.filters.type_options.export_delta'),
                     ]),
                 Filter::make('started_at')
                     ->label(__('restic-backups::backups.pages.runs.table.filters.started_at'))
@@ -146,7 +148,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                     ->label(__('restic-backups::backups.pages.runs.actions.download.label'))
                     ->icon('heroicon-o-arrow-down-tray')
                     ->visible(function (BackupRun $record): bool {
-                        if ($record->type !== 'export_snapshot' || $record->status !== 'success') {
+                        if (! in_array($record->type, ['export_snapshot', 'export_full', 'export_delta'], true) || $record->status !== 'success') {
                             return false;
                         }
 
@@ -160,6 +162,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                             'restic-backups.exports.download',
                             now()->addMinutes(60),
                             ['run' => $record->getKey()],
+                            absolute: false,
                         );
                     })
                     ->openUrlInNewTab(),

@@ -102,8 +102,8 @@ return [
                     'include_placeholder' => 'storage/app',
                     'exclude_label' => 'Exclude paths',
                     'exclude_helper' => 'Do not exclude storage/app/_backup, or the database dump will be missing.',
-                    'exclude_placeholder' => 'vendor',
-                    'restore_defaults' => 'Restore default excludes',
+                    'exclude_placeholder' => 'storage/logs',
+                    'recommended_defaults' => 'Apply recommended excludes',
                 ],
             ],
             'actions' => [
@@ -153,6 +153,61 @@ return [
             ],
             'placeholders' => [
                 'not_available' => 'n/a',
+            ],
+        ],
+        'exports' => [
+            'navigation_label' => 'Disaster Recovery',
+            'title' => 'Disaster Recovery Exports',
+            'actions' => [
+                'full' => [
+                    'label' => 'Download FULL (Complete archive)',
+                ],
+                'delta' => [
+                    'label' => 'Download DELTA (Since last FULL)',
+                ],
+            ],
+            'sections' => [
+                'baseline' => [
+                    'title' => 'Baseline (FULL)',
+                    'description' => 'Baseline snapshot used for delta exports.',
+                    'snapshot' => 'Baseline snapshot: :id',
+                    'created_at' => 'Baseline created at: :time',
+                    'status' => 'Status: :status',
+                ],
+                'latest' => [
+                    'title' => 'Latest snapshot',
+                    'description' => 'Exports always use the latest snapshot.',
+                    'snapshot' => 'Latest snapshot: :id',
+                    'time' => 'Time: :time',
+                    'ok' => 'Snapshot looks ready for export.',
+                    'warn_excludes' => 'Warning: latest snapshot excludes vendor or public/build.',
+                ],
+            ],
+            'status' => [
+                'available' => 'Available',
+                'missing' => 'Missing in repository',
+            ],
+            'placeholders' => [
+                'not_set' => 'not set',
+                'not_available' => 'not available',
+            ],
+            'notifications' => [
+                'snapshot_missing' => 'Latest snapshot not found.',
+                'baseline_missing' => 'Baseline snapshot is missing.',
+                'operation_in_progress' => 'Operation in progress',
+                'operation_running' => 'Another operation is running.',
+                'full_queued' => 'FULL export queued',
+                'full_queued_body' => 'FULL export job was queued and will run in the background.',
+                'delta_queued' => 'DELTA export queued',
+                'delta_queued_body' => 'DELTA export job was queued and will run in the background.',
+            ],
+            'errors' => [
+                'restic_not_configured' => 'Restic repository is not configured.',
+                'unable_to_load' => 'Unable to load snapshots.',
+                'unable_to_load_from_restic' => 'Unable to load snapshots from restic.',
+            ],
+            'header_actions' => [
+                'refresh' => 'Refresh',
             ],
         ],
         'snapshots' => [
@@ -276,6 +331,8 @@ return [
             'operation_types' => [
                 'backup' => 'Create snapshot',
                 'export_snapshot' => 'Export snapshot',
+                'export_full' => 'Export FULL',
+                'export_delta' => 'Export DELTA',
                 'forget_snapshot' => 'Delete snapshot',
                 'restore' => 'Restore',
             ],
@@ -283,6 +340,7 @@ return [
                 'dump' => 'Database dump',
                 'restic_backup' => 'Restic backup',
                 'retention' => 'Retention cleanup',
+                'restic_diff' => 'Restic diff',
                 'restic_restore' => 'Download from storage',
                 'pack_tar_gz' => 'Pack archive',
                 'forget_prune' => 'Forget + prune',
@@ -417,6 +475,8 @@ return [
                         'forget_snapshot' => 'Delete snapshot',
                         'restore' => 'Restore',
                         'export_snapshot' => 'Export snapshot',
+                        'export_full' => 'Export FULL',
+                        'export_delta' => 'Export DELTA',
                     ],
                     'started_at' => 'Started date',
                     'from' => 'From',

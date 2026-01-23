@@ -18,13 +18,14 @@ use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
+use Siteko\FilamentResticBackups\Support\DisasterRecoveryExport;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
 
-class ExportSnapshotArchiveJob implements ShouldQueue
+class ExportDisasterRecoveryFullJob implements ShouldQueue
 {
     use Dispatchable;
     use InteractsWithQueue;
@@ -42,7 +43,6 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
     public function __construct(
         public string $snapshotId,
-        public bool $includeEnv = false,
         public int $keepHours = 24,
         public ?int $userId = null,
         public string $trigger = 'filament',
@@ -52,7 +52,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
         $lockHandle = $operationLock->acquire(
-            'export_snapshot',
+            'export_full',
             $this->lockTtl(),
             self::LOCK_BLOCK_SECONDS,
             [
@@ -75,8 +75,10 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             'trigger' => $this->trigger,
             'export' => [
                 'format' => 'tar.gz',
-                'include_env' => $this->includeEnv,
+                'include_env' => true,
                 'keep_hours' => $this->keepHours,
+                'kind' => 'full',
+                'baseline_snapshot_id' => $this->snapshotId,
             ],
         ];
 
@@ -90,9 +92,10 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
         try {
             $settings = BackupSetting::singleton();
+            $excludePaths = $this->resolveExcludePaths($settings);
 
             $run = BackupRun::query()->create([
-                'type' => 'export_snapshot',
+                'type' => 'export_full',
                 'status' => 'running',
                 'started_at' => now(),
                 'meta' => $meta,
@@ -108,7 +111,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $short = substr($this->snapshotId, 0, 8);
             $stamp = now()->format('YmdHis');
 
-            $topFolder = "{$appSlug}-{$env}-snapshot-{$short}-{$stamp}";
+            $topFolder = "{$appSlug}-{$env}-dr-full-{$short}-{$stamp}";
             $archiveName = "{$topFolder}.tar.gz";
             $archivePath = $baseDir . DIRECTORY_SEPARATOR . $archiveName;
 
@@ -123,6 +126,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $meta['export']['archive_name'] = $archiveName;
             $meta['export']['archive_path'] = $archivePath;
             $meta['export']['work_dir'] = $workDir;
+            $meta['export']['exclude_paths'] = $excludePaths;
             $run->update(['meta' => $meta]);
 
             $step = 'restic_restore';
@@ -135,6 +139,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'exclude' => $excludePaths,
                     'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
                         $lockHandle->heartbeat(array_merge(['step' => $step], $context));
                     },
@@ -155,34 +160,29 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 throw new \RuntimeException('Restored project path was not found in the snapshot.');
             }
 
-            // Переименовываем восстановленный проект в “красивую” корневую папку архива (без /var/www/...)
             $targetProjectDir = $bundleDir . DIRECTORY_SEPARATOR . $topFolder;
 
             if (! @rename($restoredProjectPath, $targetProjectDir)) {
                 throw new \RuntimeException('Failed to move restored project directory into bundle.');
             }
 
-            // По умолчанию НЕ включаем .env (безопаснее для “скачать как архив”)
-            if (! $this->includeEnv) {
-                $envFile = $targetProjectDir . DIRECTORY_SEPARATOR . '.env';
-                if (is_file($envFile)) {
-                    @unlink($envFile);
+            if ($excludePaths !== []) {
+                $removedPaths = $this->applyExcludesToDirectory($targetProjectDir, $excludePaths);
+                if ($removedPaths !== []) {
+                    $meta['export']['excluded_paths'] = $removedPaths;
+                    $run->update(['meta' => $meta]);
                 }
             }
 
-            // Манифест (удобно понимать что внутри)
-            $manifest = [
+            $generatedAt = now()->toIso8601String();
+            $meta['export']['generated_at'] = $generatedAt;
+            $run->update(['meta' => $meta]);
+
+            DisasterRecoveryExport::writeReadmeFull($targetProjectDir, [
                 'snapshot_id' => $this->snapshotId,
-                'generated_at' => now()->toIso8601String(),
-                'app' => (string) config('app.name'),
-                'env' => (string) config('app.env'),
-                'project_root' => $projectRoot,
-                'include_env' => $this->includeEnv,
-            ];
-            @file_put_contents(
-                $targetProjectDir . DIRECTORY_SEPARATOR . '_snapshot_export.json',
-                json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-            );
+                'generated_at' => $generatedAt,
+            ]);
+            DisasterRecoveryExport::writeTools($targetProjectDir);
 
             $step = 'pack_tar_gz';
             $lockHandle->heartbeat(['step' => $step]);
@@ -209,6 +209,11 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $expiresAt = now()->addHours(max(1, (int) $this->keepHours));
             $meta['export']['expires_at'] = $expiresAt->toIso8601String();
 
+            $settings->forceFill([
+                'baseline_snapshot_id' => $this->snapshotId,
+                'baseline_created_at' => now(),
+            ])->save();
+
             $run->update([
                 'status' => 'success',
                 'finished_at' => now(),
@@ -230,14 +235,14 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 ]);
             }
 
-            // если архив успел появиться — прибьём, чтобы не оставлять мусор
+            // Remove any partially created archive to avoid leftovers.
             if (is_string($archivePath) && $archivePath !== '' && is_file($archivePath)) {
                 @unlink($archivePath);
             }
 
             throw $exception;
         } finally {
-            // workdir чистим всегда
+            // Always clean the work directory.
             if (is_string($workDir) && $workDir !== '') {
                 $this->removeDirectoryRecursive($workDir);
             }
@@ -265,7 +270,6 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
         $pending = self::dispatch(
             $this->snapshotId,
-            $this->includeEnv,
             $this->keepHours,
             $this->userId,
             $this->trigger,
@@ -346,6 +350,120 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 @rmdir($item->getPathname());
             } else {
                 @unlink($item->getPathname());
+            }
+        }
+
+        @rmdir($path);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function resolveExcludePaths(BackupSetting $settings): array
+    {
+        $paths = is_array($settings->paths) ? $settings->paths : [];
+
+        return $this->normalizePathList($paths['exclude'] ?? []);
+    }
+
+    /**
+     * @param  array<int, mixed>  $paths
+     * @return array<int, string>
+     */
+    protected function normalizePathList(array $paths): array
+    {
+        $normalized = [];
+
+        foreach ($paths as $path) {
+            if (! is_string($path) && ! is_numeric($path)) {
+                continue;
+            }
+
+            $path = trim((string) $path);
+
+            if ($path === '') {
+                continue;
+            }
+
+            $path = str_replace('\\', '/', $path);
+            $path = ltrim($path, '/');
+            $path = rtrim($path, '/');
+
+            if ($path === '') {
+                continue;
+            }
+
+            $normalized[$path] = true;
+        }
+
+        return array_values(array_keys($normalized));
+    }
+
+    /**
+     * @param  array<int, string>  $excludePaths
+     * @return array<int, string>
+     */
+    protected function applyExcludesToDirectory(string $rootDir, array $excludePaths): array
+    {
+        if ($excludePaths === []) {
+            return [];
+        }
+
+        $rootDir = rtrim($rootDir, DIRECTORY_SEPARATOR);
+        $removed = [];
+
+        foreach ($excludePaths as $exclude) {
+            $relative = $this->normalizeScalar($exclude);
+            if ($relative === null) {
+                continue;
+            }
+
+            $relative = str_replace('\\', '/', $relative);
+            $relative = ltrim($relative, '/');
+            $relative = rtrim($relative, '/');
+
+            if ($relative === '') {
+                continue;
+            }
+
+            $target = $rootDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+
+            if (! file_exists($target)) {
+                continue;
+            }
+
+            $this->removePathRecursive($target);
+            $removed[] = $relative;
+        }
+
+        return $removed;
+    }
+
+    protected function removePathRecursive(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+            return;
+        }
+
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $it = new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS);
+        $ri = new \RecursiveIteratorIterator($it, \RecursiveIteratorIterator::CHILD_FIRST);
+
+        foreach ($ri as $item) {
+            /** @var \SplFileInfo $item */
+            $itemPath = $item->getPathname();
+
+            if ($item->isLink() || $item->isFile()) {
+                @unlink($itemPath);
+                continue;
+            }
+
+            if ($item->isDir()) {
+                @rmdir($itemPath);
             }
         }
 
