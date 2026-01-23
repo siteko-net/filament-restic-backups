@@ -10,6 +10,8 @@ use Throwable;
 
 abstract class BaseBackupsPage extends Page
 {
+    private const RUNNING_FALLBACK_SECONDS = 21600; // 6h
+
     public static function getNavigationGroup(): ?string
     {
         $label = config('restic-backups.navigation.group_label');
@@ -64,7 +66,17 @@ abstract class BaseBackupsPage extends Page
         }
 
         try {
-            return BackupRun::query()->where('status', 'running')->exists();
+            $threshold = now()->subSeconds(self::RUNNING_FALLBACK_SECONDS);
+
+            return BackupRun::query()
+                ->where('status', 'running')
+                ->whereNull('finished_at')
+                ->where(function ($query) use ($threshold): void {
+                    $query
+                        ->where('started_at', '>=', $threshold)
+                        ->orWhere('updated_at', '>=', $threshold);
+                })
+                ->exists();
         } catch (Throwable) {
             return false;
         }
