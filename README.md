@@ -1,73 +1,51 @@
 # Filament Restic Backups
 
-Пакет `siteko/filament-restic-backups` для управления бэкапами Restic из Filament (Laravel 12).
+Плагин `siteko/filament-restic-backups` для Filament, который управляет бэкапами и восстановлением через Restic.
 
-> **Статус:** beta (API и UX могут меняться до 1.0).
+Официальный репозиторий: https://github.com/siteko-net/filament-restic-backups
+
+> Статус: beta (до `1.0` возможны изменения API/UX).
+
+## Что делает плагин
+
+- Создает snapshot-бэкапы проекта и БД.
+- Показывает историю запусков и snapshots в Filament.
+- Поддерживает restore (файлы/БД) с safety-механиками.
+- Делает export архивов snapshots и disaster recovery (FULL/DELTA).
+- Блокирует параллельные операции через lock-механизм.
 
 ## Требования
 
-- PHP 8.2+, Laravel 12, Filament 4
+- PHP 8.2+
+- Laravel 12
+- Filament 4
 - Установлен `restic` (в `PATH` или через `RESTIC_BINARY`)
-- Для дампа/восстановления БД:
+- Для дампа/restore БД:
   - MySQL/MariaDB: `mysqldump`/`mariadb-dump` и `mysql`/`mariadb`
-  - Postgres: `pg_dump` (восстановление БД пока ориентировано на MySQL/MariaDB)
-  - SQLite: внешние утилиты не нужны
-- Очередь (в проде лучше не `sync`)
-- Права на запись в:
-  - `storage/app/_backup`
-  - `storage/app/_restic_cache`
+  - PostgreSQL: `pg_dump` (restore БД в текущей версии ориентирован на MySQL/MariaDB)
+  - SQLite: внешние утилиты не требуются
+- Для экспорта архивов: `tar`
+- Рабочая очередь (production: не `sync`)
+- Права на запись в `storage/app/_backup` и `storage/app/_restic_cache`
 
----
+## Установка
 
-## Установка через Composer
-
-### A) Приватный GitHub (рекомендуемо сейчас)
-
-Добавьте в `composer.json` Laravel-проекта:
-
-```json
-{
-  "repositories": [
-    { "type": "vcs", "url": "git@github.com:siteko/filament-restic-backups.git" }
-  ]
-}
-````
-
-Затем установите пакет (лучше по тегу):
-
-```bash
-composer require siteko/filament-restic-backups:^0.1
-```
-
-> Если репозиторий приватный, на сервере/в CI должен быть доступ к GitHub по SSH (deploy key) или настроен токен.
-
-### B) Packagist (на будущее)
+Если пакет доступен через Packagist:
 
 ```bash
 composer require siteko/filament-restic-backups
 ```
 
-### C) Локальная разработка (path repository)
-
-В `composer.json` проекта:
-
-```json
-{
-  "repositories": [
-    { "type": "path", "url": "packages/siteko/restic-backups", "options": { "symlink": true } }
-  ]
-}
-```
-
-Затем:
+Если используется установка напрямую из GitHub-репозитория:
 
 ```bash
-composer require siteko/filament-restic-backups:*@dev
+composer config repositories.siteko-restic-backups vcs git@github.com:siteko-net/filament-restic-backups.git
+composer require siteko/filament-restic-backups
 ```
 
----
+Для приватного репозитория убедитесь, что CI/сервер имеет доступ к GitHub (SSH deploy key или token).
 
-## Публикация и миграции
+## Публикация ресурсов и миграции
 
 ```bash
 php artisan vendor:publish --tag=restic-backups-config
@@ -79,17 +57,19 @@ php artisan migrate
 php artisan db:seed --class=BackupSettingsSeeder
 ```
 
-Примечания:
+Что обязательно:
 
-* `config` — нужен только если меняете дефолты (иначе достаточно env).
-* `translations` — опционально (если хотите переопределять тексты).
-* `seeders` — опционально (первая запись настроек может создаваться при первом открытии страницы).
+- `restic-backups-migrations` + `php artisan migrate`
 
----
+Что опционально:
+
+- `restic-backups-config` (если хотите менять дефолты)
+- `restic-backups-seeders` (если хотите заранее создать запись настроек)
+- `restic-backups-translations` (если хотите переопределять тексты)
 
 ## Подключение в Filament Panel
 
-В `app/Providers/Filament/*PanelProvider.php`:
+Добавьте плагин в ваш `PanelProvider`:
 
 ```php
 use Filament\Panel;
@@ -97,67 +77,105 @@ use Siteko\FilamentResticBackups\Filament\ResticBackupsPlugin;
 
 public function panel(Panel $panel): Panel
 {
-    return $panel->plugins([
-        ResticBackupsPlugin::make(),
-    ]);
+    return $panel
+        ->plugins([
+            ResticBackupsPlugin::make(),
+        ]);
 }
 ```
 
-Если panel ID не `admin`, укажите:
+По умолчанию плагин регистрируется на панели `admin`.
+Для другой панели установите `RESTIC_BACKUPS_PANEL=your_panel_id`.
 
-* `RESTIC_BACKUPS_PANEL=your_panel_id`
+## Обязательная эксплуатационная настройка
 
----
+### 1) Очередь
 
-## Ассеты (прод)
+Плагин выполняет тяжелые операции в queue jobs. Нужен запущенный worker.
 
-Убедитесь, что ассеты Filament актуальны. В Filament 4 это обычно делается командой обновления/генерации ассетов (например через `php artisan filament:upgrade` в post-autoload-dump), либо вручную через `php artisan filament:assets`. ([Filament][1])
+Пример:
 
----
+```bash
+php artisan queue:work --tries=1
+```
 
-## Минимальная настройка
+### 2) Laravel Scheduler
 
-* `RESTIC_BINARY=/path/to/restic` (если не в `PATH`)
-* `RESTIC_BACKUPS_LOCK_STORE=redis` (рекомендовано при нескольких воркерах/серверов)
-* `config/restic-backups.php` — права доступа (`security.permissions`) и прочие параметры
-
----
-
-## Важно: планировщик и уведомления
-
-Без этих настроек **не будет** ночных запусков и уведомлений в админке.
-
-### Планировщик Laravel (cron)
-
-Ночные запуски и очистка экспортов идут через Laravel Scheduler. Сначала зарегистрируйте задачи (например, в `routes/console.php`):
+Плагин не добавляет cron автоматически. Добавьте команды в `routes/console.php`:
 
 ```php
 use Illuminate\Support\Facades\Schedule;
 
 Schedule::command('restic-backups:run --trigger=schedule')->dailyAt('02:00');
-Schedule::command('restic-backups:cleanup-exports')->daily();
+Schedule::command('restic-backups:cleanup-exports --hours=24')->daily();
+Schedule::command('restic-backups:cleanup-rollbacks --hours=24')->daily();
 ```
 
-Затем настройте выполнение расписания:
+И системный cron:
 
 ```bash
 * * * * * php /path/to/project/artisan schedule:run >> /dev/null 2>&1
 ```
 
-или использовать `php artisan schedule:work` под supervisor/systemd.
+### 3) Filament database notifications
 
-### Database Notifications в Filament
-
-Для уведомлений в админке включите Database Notifications в нужной панели:
+Чтобы видеть уведомления в админке:
 
 ```php
 $panel->databaseNotifications();
 ```
 
-И убедитесь, что таблица `notifications` существует (Laravel: `php artisan notifications:table` + `php artisan migrate`).
+И создайте таблицу:
 
----
+```bash
+php artisan notifications:table
+php artisan migrate
+```
 
-## Проверка
+## Минимальные env/config параметры
 
-Filament → группа “Backups” → страницы Overview / Settings.
+- `RESTIC_BINARY=/path/to/restic` (если бинарник не в `PATH`)
+- `RESTIC_BACKUPS_PANEL=admin` (ID Filament-панели)
+- `RESTIC_BACKUPS_LOCK_STORE=redis` (рекомендуется для multi-worker/multi-server)
+
+Остальные настройки: `config/restic-backups.php`.
+
+## Полезные artisan-команды
+
+- `php artisan restic-backups:run`
+- `php artisan restic-backups:run --sync`
+- `php artisan restic-backups:cleanup-exports --dry-run`
+- `php artisan restic-backups:cleanup-rollbacks --dry-run`
+- `php artisan restic-backups:unlock --stale`
+
+## Локальная разработка плагина (standalone workflow)
+
+Если вы разрабатываете плагин из этого репозитория и подключаете его в отдельный Laravel-проект:
+
+```json
+{
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../filament-restic-backups",
+      "options": { "symlink": true }
+    }
+  ]
+}
+```
+
+```bash
+composer require siteko/filament-restic-backups:*@dev
+```
+
+## Проверка после установки
+
+1. Откройте Filament.
+2. Убедитесь, что появилась группа `Backups`.
+3. Заполните `Backups -> Settings`.
+4. Запустите `Create snapshot` на странице `Overview`.
+5. Проверьте запись в `Backups -> Runs`.
+
+## Лицензия
+
+MIT
