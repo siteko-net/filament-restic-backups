@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Filament\Pages;
 
+use Carbon\CarbonInterface;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Radio;
@@ -812,7 +813,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         if ($status === 'success') {
             if ($archivePath !== null && $archiveName !== null) {
-                if ($expiresAt instanceof Carbon && now()->greaterThan($expiresAt)) {
+                if ($expiresAt instanceof CarbonInterface && now()->greaterThan($expiresAt)) {
                     return [
                         'size_bytes' => $archiveSize,
                         'status' => 'expired',
@@ -880,11 +881,11 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         ];
     }
 
-    protected function resolveArchiveLinkExpiry(?Carbon $expiresAt): Carbon
+    protected function resolveArchiveLinkExpiry(?CarbonInterface $expiresAt): CarbonInterface
     {
         $defaultExpiry = now()->addMinutes(60);
 
-        if (! $expiresAt instanceof Carbon) {
+        if (! $expiresAt instanceof CarbonInterface) {
             return $defaultExpiry;
         }
 
@@ -895,9 +896,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         return $defaultExpiry;
     }
 
-    protected function parseArchiveExpiresAt(mixed $value): ?Carbon
+    protected function parseArchiveExpiresAt(mixed $value): ?CarbonInterface
     {
-        if ($value instanceof Carbon) {
+        if ($value instanceof CarbonInterface) {
             return $value;
         }
 

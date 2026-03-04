@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Siteko\FilamentResticBackups\Jobs;
 
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Illuminate\Bus\Queueable;
@@ -429,7 +430,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
      * @param  array<string, mixed>  $meta
      * @return array<string, mixed>
      */
-    protected function scheduleArchiveCleanup(BackupRun $run, array $meta, Carbon $expiresAt): array
+    protected function scheduleArchiveCleanup(BackupRun $run, array $meta, CarbonInterface $expiresAt): array
     {
         if (! $expiresAt->greaterThan(now())) {
             return $meta;
@@ -497,7 +498,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
         $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
 
-        if ($expiresAt instanceof Carbon && now()->greaterThan($expiresAt)) {
+        if ($expiresAt instanceof CarbonInterface && now()->greaterThan($expiresAt)) {
             return;
         }
 
@@ -542,11 +543,11 @@ class ExportSnapshotArchiveJob implements ShouldQueue
         return $user instanceof Authenticatable ? $user : null;
     }
 
-    protected function resolveArchiveLinkExpiry(?Carbon $expiresAt): Carbon
+    protected function resolveArchiveLinkExpiry(?CarbonInterface $expiresAt): CarbonInterface
     {
         $defaultExpiry = now()->addMinutes(60);
 
-        if (! $expiresAt instanceof Carbon) {
+        if (! $expiresAt instanceof CarbonInterface) {
             return $defaultExpiry;
         }
 
@@ -557,9 +558,9 @@ class ExportSnapshotArchiveJob implements ShouldQueue
         return $defaultExpiry;
     }
 
-    protected function parseArchiveExpiresAt(mixed $value): ?Carbon
+    protected function parseArchiveExpiresAt(mixed $value): ?CarbonInterface
     {
-        if ($value instanceof Carbon) {
+        if ($value instanceof CarbonInterface) {
             return $value;
         }
 
