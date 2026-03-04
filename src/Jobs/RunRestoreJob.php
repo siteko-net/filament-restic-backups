@@ -432,6 +432,16 @@ class RunRestoreJob implements ShouldQueue
 
                     $run->update(['meta' => $meta]);
 
+                    $step = 'cutover_runtime_prepare';
+                    $lockHandle->heartbeat(['step' => $step]);
+                    $runtimePrepare = $this->prepareRuntimeDirectories($projectRoot);
+                    $meta['steps']['cutover_runtime_prepare'] = $runtimePrepare;
+                    $run->update(['meta' => $meta]);
+
+                    if (($runtimePrepare['exit_code'] ?? 1) !== 0) {
+                        throw new \RuntimeException('Failed to prepare runtime directories after swap.');
+                    }
+
                     $step = 'cutover_down_after_swap';
                     $lockHandle->heartbeat(['step' => $step]);
                     $downAfterSwap = $this->runArtisanDown($projectRoot, $downSecret);
@@ -450,6 +460,16 @@ class RunRestoreJob implements ShouldQueue
 
                     if (($swapMeta['exit_code'] ?? 1) !== 0) {
                         throw new \RuntimeException('File restore failed.');
+                    }
+
+                    $step = 'cutover_runtime_prepare';
+                    $lockHandle->heartbeat(['step' => $step]);
+                    $runtimePrepare = $this->prepareRuntimeDirectories($projectRoot);
+                    $meta['steps']['cutover_runtime_prepare'] = $runtimePrepare;
+                    $run->update(['meta' => $meta]);
+
+                    if (($runtimePrepare['exit_code'] ?? 1) !== 0) {
+                        throw new \RuntimeException('Failed to prepare runtime directories after file restore.');
                     }
                 }
             }
@@ -544,6 +564,10 @@ class RunRestoreJob implements ShouldQueue
                 $rollbackMeta = $this->attemptRollback($projectRoot, $rollbackDir);
                 $meta['steps']['rollback_swap'] = $rollbackMeta;
                 $rollbackSuccess = ($rollbackMeta['exit_code'] ?? 1) === 0;
+
+                if ($rollbackSuccess) {
+                    $meta = $this->normalizeRestoreMetaAfterRollback($meta, $projectRoot);
+                }
             }
 
             if (
@@ -1819,6 +1843,41 @@ class RunRestoreJob implements ShouldQueue
     }
 
     /**
+     * @param  array<string, mixed>  $meta
+     * @return array<string, mixed>
+     */
+    protected function normalizeRestoreMetaAfterRollback(array $meta, string $projectRoot): array
+    {
+        $restoreMeta = is_array($meta['restore'] ?? null) ? $meta['restore'] : [];
+
+        if ($restoreMeta === []) {
+            return $meta;
+        }
+
+        $rollbackDir = $this->normalizeScalar($restoreMeta['rollback_dir'] ?? null);
+        if ($rollbackDir !== null && ! is_dir($rollbackDir)) {
+            $restoreMeta['rollback_dir_original'] = $rollbackDir;
+            unset($restoreMeta['rollback_dir']);
+        }
+
+        $safetyDumpPath = $this->normalizeScalar($restoreMeta['safety_dump_path'] ?? null);
+        if ($safetyDumpPath !== null && ! is_file($safetyDumpPath)) {
+            $restoreMeta['safety_dump_path_original'] = $safetyDumpPath;
+            $fallbackPath = $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+
+            if (is_file($fallbackPath)) {
+                $restoreMeta['safety_dump_path'] = $fallbackPath;
+            } else {
+                unset($restoreMeta['safety_dump_path']);
+            }
+        }
+
+        $meta['restore'] = $restoreMeta;
+
+        return $meta;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     protected function attemptDatabaseRollback(string $connectionName, ?string $dumpPath, string $projectRoot): array
@@ -1895,6 +1954,45 @@ class RunRestoreJob implements ShouldQueue
             'exit_code' => $errors === [] ? 0 : 1,
             'duration_ms' => (int) round((microtime(true) - $start) * 1000),
             'paths' => $paths,
+            'errors' => $errors,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function prepareRuntimeDirectories(string $projectRoot): array
+    {
+        $start = microtime(true);
+        $paths = [
+            $projectRoot . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'cache',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'cache',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'data',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'sessions',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'views',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'testing',
+            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'logs',
+        ];
+        $errors = [];
+        $ensured = [];
+
+        foreach ($paths as $path) {
+            try {
+                $this->ensureDirectory($path, mustBeWritable: true, context: 'runtime_directory');
+                $ensured[] = $path;
+            } catch (Throwable $exception) {
+                $errors[] = $this->truncateString("{$path}: {$exception->getMessage()}", self::META_OUTPUT_LIMIT);
+            }
+        }
+
+        return [
+            'exit_code' => $errors === [] ? 0 : 1,
+            'duration_ms' => (int) round((microtime(true) - $start) * 1000),
+            'paths' => $paths,
+            'ensured' => $ensured,
             'errors' => $errors,
         ];
     }

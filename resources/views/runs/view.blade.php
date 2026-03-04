@@ -7,9 +7,12 @@
     $steps = $meta['steps'] ?? [];
     $snapshot = $meta['snapshot'] ?? [];
     $restoreMeta = $meta['restore'] ?? [];
+    $rollback = $meta['rollback'] ?? [];
     $rollbackPath = $restoreMeta['rollback_dir'] ?? null;
+    $rollbackPathOriginal = $restoreMeta['rollback_dir_original'] ?? $rollbackPath;
     $safetyDumpPath = $restoreMeta['safety_dump_path'] ?? null;
     $bypassPath = $restoreMeta['bypass_path'] ?? null;
+    $projectRoot = $meta['project_root'] ?? null;
     $duration = null;
     $notAvailable = __('restic-backups::backups.views.placeholders.not_available');
     $yesLabel = __('restic-backups::backups.views.values.yes');
@@ -50,6 +53,21 @@
 
     if ($safetyDumpPath === null && is_string($rollbackPath)) {
         $candidate = $rollbackPath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        if (is_file($candidate)) {
+            $safetyDumpPath = $candidate;
+        }
+    }
+
+    if (! is_string($rollbackPath) || ! is_dir($rollbackPath)) {
+        $rollbackPath = null;
+    }
+
+    if (is_string($safetyDumpPath) && ! is_file($safetyDumpPath)) {
+        $safetyDumpPath = null;
+    }
+
+    if ($safetyDumpPath === null && is_string($projectRoot)) {
+        $candidate = $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
         if (is_file($candidate)) {
             $safetyDumpPath = $candidate;
         }
@@ -126,6 +144,16 @@
                     <button type="button" class="rb-link" x-data @click="navigator.clipboard.writeText(@js($rollbackPath))">
                         {{ __('restic-backups::backups.views.runs.labels.copy') }}
                     </button>
+                </div>
+            @elseif (
+                ! empty($rollbackPathOriginal)
+                && ($rollback['attempted'] ?? false)
+                && ($rollback['success'] ?? false)
+            )
+                <div class="rb-text rb-text--muted">
+                    {{ __('restic-backups::backups.views.runs.labels.rollback_path_moved_back', [
+                        'path' => is_string($projectRoot) ? $projectRoot : $notAvailable,
+                    ]) }}
                 </div>
             @endif
             @if (! empty($safetyDumpPath))
