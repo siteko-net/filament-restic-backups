@@ -96,7 +96,7 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                     ->label(__('restic-backups::backups.pages.runs.table.columns.trigger'))
                     ->formatStateUsing(fn(?string $state): string => $this->translateMappedState(
                         $state,
-                        'restic-backups::backups.pages.runs.table.trigger_options.',
+                        'restic-backups::backups.pages.runs.table.filters.trigger_options.',
                     ))
                     ->toggleable(),
                 TextColumn::make('meta.tags')
