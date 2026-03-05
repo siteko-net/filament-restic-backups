@@ -479,6 +479,12 @@ return [
                         'export_full' => 'Export FULL',
                         'export_delta' => 'Export DELTA',
                     ],
+                    'trigger_options' => [
+                        'manual' => 'Manual',
+                        'schedule' => 'Schedule',
+                        'system' => 'System',
+                        'filament' => 'Filament',
+                    ],
                     'started_at' => 'Started date',
                     'from' => 'From',
                     'until' => 'Until',

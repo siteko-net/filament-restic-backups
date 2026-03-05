@@ -68,6 +68,10 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                 TextColumn::make('type')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.type'))
                     ->badge()
+                    ->formatStateUsing(fn(?string $state): string => $this->translateMappedState(
+                        $state,
+                        'restic-backups::backups.pages.runs.table.filters.type_options.',
+                    ))
                     ->sortable(),
                 TextColumn::make('status')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.status'))
@@ -79,6 +83,10 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                         'skipped' => 'gray',
                         default => 'gray',
                     })
+                    ->formatStateUsing(fn(?string $state): string => $this->translateMappedState(
+                        $state,
+                        'restic-backups::backups.pages.runs.table.filters.status_options.',
+                    ))
                     ->sortable(),
                 TextColumn::make('duration')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.duration'))
@@ -86,6 +94,10 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
                     ->toggleable(),
                 TextColumn::make('meta.trigger')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.trigger'))
+                    ->formatStateUsing(fn(?string $state): string => $this->translateMappedState(
+                        $state,
+                        'restic-backups::backups.pages.runs.table.trigger_options.',
+                    ))
                     ->toggleable(),
                 TextColumn::make('meta.tags')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.tags'))
@@ -275,5 +287,17 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
     protected function displayTimezone(): string
     {
         return $this->displayTimezone ??= BackupsTimezone::resolve();
+    }
+
+    protected function translateMappedState(?string $state, string $prefix): string
+    {
+        if (! is_string($state) || $state === '') {
+            return __('restic-backups::backups.views.placeholders.not_available');
+        }
+
+        $key = $prefix . $state;
+        $translated = __($key);
+
+        return $translated === $key ? $state : $translated;
     }
 }
