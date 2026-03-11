@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Jobs;
 
+use Filament\Notifications\Notification;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -54,6 +56,7 @@ class RunRestoreJob implements ShouldQueue
         public bool $safetyBackup = true,
         public ?string $trigger = 'manual',
         public ?string $dbConnection = null,
+        public ?int $userId = null,
     ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
@@ -118,6 +121,10 @@ class RunRestoreJob implements ShouldQueue
                 'app_env' => (string) config('app.env'),
                 'paths' => $pathConfig,
             ];
+
+            if ($this->userId !== null) {
+                $meta['initiator_user_id'] = $this->userId;
+            }
 
             $run = BackupRun::query()->create([
                 'type' => 'restore',
@@ -317,6 +324,8 @@ class RunRestoreJob implements ShouldQueue
                     'finished_at' => now(),
                     'meta' => $meta,
                 ]);
+
+                $this->notifyRestoreReady($run, $meta);
 
                 return;
             }
@@ -581,6 +590,8 @@ class RunRestoreJob implements ShouldQueue
                 'finished_at' => now(),
                 'meta' => $meta,
             ]);
+
+            $this->notifyRestoreReady($run, $meta);
         } catch (Throwable $exception) {
             if ($maintenanceStarted && $swapCompleted && is_string($projectRoot) && is_string($rollbackDir)) {
                 $step = 'rollback';
@@ -2997,6 +3008,75 @@ class RunRestoreJob implements ShouldQueue
         ));
 
         return $dumpMeta;
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    protected function notifyRestoreReady(BackupRun $run, array $meta): void
+    {
+        if ($this->userId === null) {
+            return;
+        }
+
+        $user = $this->resolveNotificationUser($this->userId);
+
+        if (! $user || ! method_exists($user, 'notify')) {
+            return;
+        }
+
+        $snapshotLabel = $this->extractRestoreSnapshotLabel($meta);
+        $body = $snapshotLabel
+            ? __('restic-backups::backups.pages.snapshots.notifications.restore_ready_body', [
+                'snapshot' => $snapshotLabel,
+            ])
+            : __('restic-backups::backups.pages.snapshots.notifications.restore_ready_body_generic');
+
+        try {
+            Notification::make()
+                ->title(__('restic-backups::backups.pages.snapshots.notifications.restore_ready'))
+                ->body($body)
+                ->success()
+                ->sendToDatabase($user, isEventDispatched: true);
+        } catch (Throwable) {
+            // Notification failure should not fail the restore job.
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    protected function extractRestoreSnapshotLabel(array $meta): ?string
+    {
+        $snapshotMeta = is_array($meta['snapshot'] ?? null) ? $meta['snapshot'] : [];
+        $snapshotShort = $this->normalizeScalar($snapshotMeta['short_id'] ?? null);
+
+        if ($snapshotShort !== null && $snapshotShort !== '') {
+            return $snapshotShort;
+        }
+
+        foreach ([$meta['snapshot_id'] ?? null, $snapshotMeta['id'] ?? null] as $candidate) {
+            $snapshotId = $this->normalizeScalar($candidate);
+
+            if ($snapshotId !== null && $snapshotId !== '') {
+                return Str::substr($snapshotId, 0, 8);
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveNotificationUser(int $userId): ?Authenticatable
+    {
+        $model = config('auth.providers.users.model');
+
+        if (! is_string($model) || $model === '' || ! is_subclass_of($model, Authenticatable::class)) {
+            return null;
+        }
+
+        $user = $model::query()->find($userId);
+
+        return $user instanceof Authenticatable ? $user : null;
     }
 
     /**
