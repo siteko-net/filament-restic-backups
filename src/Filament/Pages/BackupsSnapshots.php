@@ -190,7 +190,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         $scope = $this->normalizeRestoreScope((string) ($data['scope'] ?? 'files'));
                         $mode = $scope === 'db'
                             ? null
-                            : $this->normalizeRestoreMode((string) ($data['mode'] ?? 'atomic'));
+                            : $this->normalizeRestoreMode((string) ($data['mode'] ?? 'rsync'));
                         $safetyBackup = (bool) ($data['safety_backup'] ?? true);
                         $expectedPhrase = $this->normalizeConfirmationInput(
                             (string) ($data['confirmation_phrase'] ?? $this->buildConfirmationPhrase($record, $scope)),
@@ -1259,7 +1259,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $paths = $this->formatPathsSummary($record['paths'] ?? []);
         $preflightBase = $this->computePreflightBase($record);
         $this->restorePreflightBase = $preflightBase;
-        $this->restorePreflightOk = $this->preflightOkForValues($preflightBase, 'files', 'atomic');
+        $this->restorePreflightOk = $this->preflightOkForValues($preflightBase, 'files', 'rsync');
 
         return [
             Step::make(__('restic-backups::backups.pages.snapshots.wizard.steps.snapshot'))
@@ -1294,7 +1294,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             'rsync' => __('restic-backups::backups.pages.snapshots.wizard.scope.mode_options.rsync'),
                             'atomic' => __('restic-backups::backups.pages.snapshots.wizard.scope.mode_options.atomic'),
                         ])
-                        ->default('atomic')
+                        ->default('rsync')
+                        ->live()
                         ->helperText(__('restic-backups::backups.pages.snapshots.wizard.scope.mode_helper'))
                         ->required(function (Get $get): bool {
                             $scope = $this->normalizeRestoreScope((string) ($get('scope') ?? 'files'));
@@ -1359,7 +1360,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         $scope = $this->normalizeRestoreScope((string) ($get('scope') ?? 'files'));
                         $mode = $scope === 'db'
                             ? 'rsync'
-                            : $this->normalizeRestoreMode((string) ($get('mode') ?? 'atomic'));
+                            : $this->normalizeRestoreMode((string) ($get('mode') ?? 'rsync'));
                         $suffix = '';
 
                         if ($mode === 'atomic' && $sameFs !== null) {
@@ -1502,7 +1503,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     protected function preflightOkForState(Get $get, ?array $base): bool
     {
         $scope = $this->normalizeRestoreScope((string) ($get('scope') ?? 'files'));
-        $mode = $this->normalizeRestoreMode((string) ($get('mode') ?? 'atomic'));
+        $mode = $this->normalizeRestoreMode((string) ($get('mode') ?? 'rsync'));
 
         return $this->preflightOkForValues($base, $scope, $mode);
     }
@@ -1513,7 +1514,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     protected function preflightOkFromData(?array $base, array $data): bool
     {
         $scope = $this->normalizeRestoreScope((string) ($data['scope'] ?? 'files'));
-        $mode = $scope === 'db' ? 'rsync' : $this->normalizeRestoreMode((string) ($data['mode'] ?? 'atomic'));
+        $mode = $scope === 'db' ? 'rsync' : $this->normalizeRestoreMode((string) ($data['mode'] ?? 'rsync'));
 
         return $this->preflightOkForValues($base, $scope, $mode);
     }
