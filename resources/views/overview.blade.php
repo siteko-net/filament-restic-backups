@@ -138,12 +138,6 @@
                 {{ __('restic-backups::backups.views.overview.labels.free_disk') }}: {{ $formatBytes($system['disk_free_bytes'] ?? null) }}
             </div>
             <div class="rb-text">
-                {{ __('restic-backups::backups.views.overview.labels.queue') }}: {{ $queue['connection'] ?? $notAvailable }}
-            </div>
-            @if (($queue['is_sync'] ?? false) === true)
-                <div class="rb-text rb-muted">{{ __('restic-backups::backups.views.overview.messages.queue_sync') }}</div>
-            @endif
-            <div class="rb-text">
                 {{ __('restic-backups::backups.views.overview.labels.settings_configured') }}:
                 {{ ($settings['configured'] ?? false) ? $yesLabel : $noLabel }}
             </div>
