@@ -393,7 +393,9 @@ class BackupsSettings extends BaseBackupsPage
                             ->default(false),
                         TimePicker::make('schedule.daily_time')
                             ->label(__('restic-backups::backups.pages.settings.sections.schedule.daily_time'))
-                            ->seconds(false),
+                            ->seconds(false)
+                            ->native(false)
+                            ->minutesStep(5),
                         TextInput::make('schedule.timezone')
                             ->label(__('restic-backups::backups.pages.settings.sections.schedule.timezone'))
                             ->placeholder(config('app.timezone')),
