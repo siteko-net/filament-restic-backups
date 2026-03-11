@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Filament\Pages;
 
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Actions as ActionsComponent;
@@ -12,10 +14,12 @@ use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
 use Illuminate\Support\HtmlString;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Jobs\ExportDisasterRecoveryDeltaJob;
 use Siteko\FilamentResticBackups\Jobs\ExportDisasterRecoveryFullJob;
+use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\BackupsTimezone;
@@ -161,6 +165,14 @@ class BackupsExports extends BaseBackupsPage
                                 ->send();
                         }),
                 ])
+                    ->poll(self::OPERATION_POLL_SECONDS . 's'),
+                Section::make(__('restic-backups::backups.pages.exports.sections.downloads.title'))
+                    ->description(__('restic-backups::backups.pages.exports.sections.downloads.description'))
+                    ->columns(1)
+                    ->schema([
+                        Text::make(fn(): HtmlString => $this->renderReadyArchiveLine('export_full')),
+                        Text::make(fn(): HtmlString => $this->renderReadyArchiveLine('export_delta')),
+                    ])
                     ->poll(self::OPERATION_POLL_SECONDS . 's'),
                 Section::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.title', [
                     'type' => $this->resolveOperationTypeLabel(
@@ -558,6 +570,134 @@ class BackupsExports extends BaseBackupsPage
         return new HtmlString(
             '<span class="rb-inline">' . $spinner . '<span>' . e($label) . '</span></span>',
         );
+    }
+
+    protected function renderReadyArchiveLine(string $type): HtmlString
+    {
+        $kindLabel = $this->readyArchiveKindLabel($type);
+        $archive = $this->latestReadyArchive($type);
+
+        if (! is_array($archive)) {
+            return new HtmlString(e(__('restic-backups::backups.pages.exports.sections.downloads.line_not_ready', [
+                'kind' => $kindLabel,
+            ])));
+        }
+
+        $downloadUrl = $this->normalizeScalar($archive['download_url'] ?? null);
+        $runId = isset($archive['run_id']) && is_numeric($archive['run_id']) ? (int) $archive['run_id'] : null;
+
+        if ($downloadUrl === null || $runId === null) {
+            return new HtmlString(e(__('restic-backups::backups.pages.exports.sections.downloads.line_not_ready', [
+                'kind' => $kindLabel,
+            ])));
+        }
+
+        $downloadLabel = __('restic-backups::backups.pages.exports.sections.downloads.download');
+        $runLabel = __('restic-backups::backups.pages.exports.sections.downloads.run', ['run_id' => $runId]);
+
+        return new HtmlString(
+            e($kindLabel)
+            . ': '
+            . '<a class="rb-link" href="' . e($downloadUrl) . '" target="_blank" rel="noopener noreferrer">'
+            . e($downloadLabel)
+            . '</a>'
+            . ' <span class="rb-text rb-text--muted rb-text--sm">(' . e($runLabel) . ')</span>',
+        );
+    }
+
+    /**
+     * @return array<string, mixed> | null
+     */
+    protected function latestReadyArchive(string $type): ?array
+    {
+        if (! in_array($type, ['export_full', 'export_delta'], true)) {
+            return null;
+        }
+
+        $runs = BackupRun::query()
+            ->where('type', $type)
+            ->where('status', 'success')
+            ->orderByDesc('id')
+            ->limit(30)
+            ->get();
+
+        foreach ($runs as $run) {
+            $meta = is_array($run->meta) ? $run->meta : [];
+            $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+
+            $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
+            $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
+
+            if ($archivePath === null || $archiveName === null || ! is_file($archivePath)) {
+                continue;
+            }
+
+            if ($this->normalizeScalar($export['deleted_at'] ?? null) !== null) {
+                continue;
+            }
+
+            $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
+            if ($expiresAt instanceof CarbonInterface && now()->greaterThan($expiresAt)) {
+                continue;
+            }
+
+            $downloadUrl = URL::temporarySignedRoute(
+                'restic-backups.exports.download',
+                $this->resolveArchiveLinkExpiry($expiresAt),
+                ['run' => $run->getKey()],
+                absolute: false,
+            );
+
+            return [
+                'run_id' => $run->getKey(),
+                'download_url' => $downloadUrl,
+            ];
+        }
+
+        return null;
+    }
+
+    protected function readyArchiveKindLabel(string $type): string
+    {
+        return match ($type) {
+            'export_full' => __('restic-backups::backups.pages.exports.sections.downloads.kind.full'),
+            'export_delta' => __('restic-backups::backups.pages.exports.sections.downloads.kind.delta'),
+            default => Str::of($type)->replace('_', ' ')->upper()->toString(),
+        };
+    }
+
+    protected function resolveArchiveLinkExpiry(?CarbonInterface $expiresAt): CarbonInterface
+    {
+        $defaultExpiry = now()->addMinutes(60);
+
+        if (! $expiresAt instanceof CarbonInterface) {
+            return $defaultExpiry;
+        }
+
+        if ($expiresAt->lessThan($defaultExpiry) && $expiresAt->greaterThan(now())) {
+            return $expiresAt;
+        }
+
+        return $defaultExpiry;
+    }
+
+    protected function parseArchiveExpiresAt(mixed $value): ?CarbonInterface
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value;
+        }
+
+        $value = $this->normalizeScalar($value);
+
+        if ($value === null) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     protected function formatTimestamp(?string $value, string $fallback): string

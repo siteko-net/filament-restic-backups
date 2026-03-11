@@ -633,6 +633,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return $items;
         }
 
+        $settings = BackupSetting::singleton();
+        $baselineSnapshotId = $this->normalizeScalar($settings->baseline_snapshot_id);
+
         $snapshotIds = collect($items)
             ->map(fn (array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
             ->filter()
@@ -654,6 +657,19 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ->orderByDesc('id')
             ->get();
 
+        $baselineFullRun = null;
+        if ($baselineSnapshotId !== null) {
+            $candidate = BackupRun::query()
+                ->where('type', 'export_full')
+                ->where('meta->snapshot_id', $baselineSnapshotId)
+                ->orderByDesc('id')
+                ->first();
+
+            if ($candidate instanceof BackupRun) {
+                $baselineFullRun = $candidate;
+            }
+        }
+
         $latestBySnapshot = [];
 
         foreach ($runs as $run) {
@@ -669,7 +685,20 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         foreach ($items as $index => $item) {
             $snapshotId = $this->normalizeScalar($item['id'] ?? null);
-            $run = $snapshotId !== null ? ($latestBySnapshot[$snapshotId] ?? null) : null;
+            $run = null;
+
+            if (
+                $snapshotId !== null
+                && $baselineFullRun instanceof BackupRun
+                && $this->snapshotIdsMatch($snapshotId, $baselineSnapshotId)
+            ) {
+                $run = $baselineFullRun;
+            }
+
+            if (! $run instanceof BackupRun && $snapshotId !== null) {
+                $run = $latestBySnapshot[$snapshotId] ?? null;
+            }
+
             $items[$index]['archive'] = $this->buildArchiveState($run);
         }
 
@@ -806,12 +835,14 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $archiveSize = is_numeric($archiveSize) ? (int) $archiveSize : null;
         $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
         $deletedAt = $this->normalizeScalar($export['deleted_at'] ?? null);
+        $archiveKind = $this->resolveArchiveKind($run, $export);
 
         if ($deletedAt !== null) {
             return [
                 'status' => 'deleted',
                 'run_id' => $run->getKey(),
                 'size_bytes' => null,
+                'kind' => $archiveKind,
             ];
         }
 
@@ -829,6 +860,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             absolute: false,
                         ),
                         'run_id' => $run->getKey(),
+                        'kind' => $archiveKind,
                     ];
                 }
 
@@ -852,6 +884,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     'delete_url' => $deleteUrl,
                     'expires_at' => $expiresAt?->toIso8601String(),
                     'run_id' => $run->getKey(),
+                    'kind' => $archiveKind,
                 ];
             }
 
@@ -859,6 +892,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'size_bytes' => $archiveSize,
                 'status' => 'failed',
                 'run_id' => $run->getKey(),
+                'kind' => $archiveKind,
             ];
         }
 
@@ -867,6 +901,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'size_bytes' => $archiveSize,
                 'status' => 'failed',
                 'run_id' => $run->getKey(),
+                'kind' => $archiveKind,
             ];
         }
 
@@ -875,6 +910,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'size_bytes' => $archiveSize,
                 'status' => 'queue',
                 'run_id' => $run->getKey(),
+                'kind' => $archiveKind,
             ];
         }
 
@@ -882,7 +918,46 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             'size_bytes' => $archiveSize,
             'status' => 'queue',
             'run_id' => $run->getKey(),
+            'kind' => $archiveKind,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $export
+     */
+    protected function resolveArchiveKind(BackupRun $run, array $export): string
+    {
+        $kind = $this->normalizeScalar($export['kind'] ?? null);
+
+        if ($kind !== null) {
+            $kind = strtolower($kind);
+
+            if (in_array($kind, ['snapshot', 'full', 'delta'], true)) {
+                return $kind;
+            }
+        }
+
+        return match ((string) $run->type) {
+            'export_full' => 'full',
+            'export_delta' => 'delta',
+            default => 'snapshot',
+        };
+    }
+
+    protected function snapshotIdsMatch(?string $left, ?string $right): bool
+    {
+        $left = $this->normalizeScalar($left);
+        $right = $this->normalizeScalar($right);
+
+        if ($left === null || $right === null) {
+            return false;
+        }
+
+        if ($left === $right) {
+            return true;
+        }
+
+        return str_starts_with($left, $right) || str_starts_with($right, $left);
     }
 
     protected function resolveArchiveLinkExpiry(?CarbonInterface $expiresAt): CarbonInterface

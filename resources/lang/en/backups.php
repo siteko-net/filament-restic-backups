@@ -184,6 +184,17 @@ return [
                     'ok' => 'Snapshot looks ready for export.',
                     'warn_excludes' => 'Warning: latest snapshot excludes vendor or public/build.',
                 ],
+                'downloads' => [
+                    'title' => 'Download links',
+                    'description' => 'Latest ready FULL and DELTA archives.',
+                    'kind' => [
+                        'full' => 'FULL',
+                        'delta' => 'DELTA',
+                    ],
+                    'line_not_ready' => ':kind: n/a',
+                    'download' => 'Download',
+                    'run' => 'run #:run_id',
+                ],
             ],
             'status' => [
                 'available' => 'Available',
@@ -267,6 +278,9 @@ return [
                     'expired' => 'Expired',
                     'deleted' => 'Deleted',
                     'none' => 'n/a',
+                ],
+                'kind' => [
+                    'full' => 'FULL',
                 ],
                 'size' => 'Archive size: :size',
                 'size_help' => 'Archive is a compressed tar.gz of a single snapshot. Data size shows uncompressed files, so the archive can be much smaller.',

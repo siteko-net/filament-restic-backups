@@ -6,6 +6,7 @@
     $archiveSize = isset($archive['size_bytes']) && is_numeric($archive['size_bytes'])
         ? (int) $archive['size_bytes']
         : null;
+    $archiveKind = is_string($archive['kind'] ?? null) ? strtolower((string) $archive['kind']) : 'snapshot';
     $notAvailable = __('restic-backups::backups.pages.snapshots.placeholders.not_available');
 
     $statusMap = [
@@ -49,6 +50,9 @@
 
 <div class="rb-stack">
     <span class="{{ $class }}">{{ $label }}</span>
+    @if ($archiveKind === 'full')
+        <span class="rb-text rb-text--muted rb-text--sm">{{ __('restic-backups::backups.pages.snapshots.archive.kind.full') }}</span>
+    @endif
     @if ($archiveSize !== null)
         <span class="rb-text rb-text--muted rb-text--sm rb-tooltip" title="{{ $archiveSizeHelp }}" aria-label="{{ $archiveSizeHelp }}">
             {{ __('restic-backups::backups.pages.snapshots.archive.size', ['size' => $archiveSizeLabel]) }}
