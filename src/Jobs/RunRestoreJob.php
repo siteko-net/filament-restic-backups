@@ -32,13 +32,19 @@ class RunRestoreJob implements ShouldQueue
     use SerializesModels;
 
     private const LOCK_TTL_SECONDS = 21600;
+
     private const META_OUTPUT_LIMIT = 204800;
+
     private const ROLLBACK_CLEANUP_DELAY_HOURS = 24;
+
     private const LOCK_BLOCK_SECONDS = 60;
+
     private const REQUEUE_DELAYS = [120, 300, 600];
 
     public int $timeout = 21600;
+
     public int $tries = 1;
+
     public array $backoff = [60];
 
     public function __construct(
@@ -48,8 +54,7 @@ class RunRestoreJob implements ShouldQueue
         public bool $safetyBackup = true,
         public ?string $trigger = 'manual',
         public ?string $dbConnection = null,
-    ) {
-    }
+    ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
@@ -155,18 +160,25 @@ class RunRestoreJob implements ShouldQueue
             if ($this->requiresFiles($scope) && $mode === 'atomic') {
                 $step = 'preflight_fs';
                 $lockHandle->heartbeat(['step' => $step]);
-                $sameFs = $this->sameFilesystem($projectRoot, dirname($projectRoot));
+                $stagingParent = dirname($projectRoot);
+                $sameFs = $this->sameFilesystem($projectRoot, $stagingParent);
+                $stagingParentWritable = is_writable($stagingParent);
                 $meta['steps']['preflight_fs'] = [
-                    'exit_code' => $sameFs ? 0 : 1,
+                    'exit_code' => $sameFs && $stagingParentWritable ? 0 : 1,
                     'same_filesystem' => $sameFs,
                     'project_root' => $projectRoot,
-                    'staging_parent' => dirname($projectRoot),
+                    'staging_parent' => $stagingParent,
+                    'staging_parent_writable' => $stagingParentWritable,
                     'duration_ms' => 0,
                 ];
                 $run->update(['meta' => $meta]);
 
                 if (! $sameFs) {
                     throw new \RuntimeException('Atomic swap requires staging on the same filesystem.');
+                }
+
+                if (! $stagingParentWritable) {
+                    throw new \RuntimeException("Atomic swap requires write access to staging parent [{$stagingParent}]. Switch restore mode to rsync or adjust filesystem permissions.");
                 }
             }
 
@@ -239,7 +251,7 @@ class RunRestoreJob implements ShouldQueue
                 $downSecret = $this->generateDownSecret();
                 $meta['restore'] = array_merge($meta['restore'] ?? [], [
                     'secret' => $downSecret,
-                    'bypass_path' => '/' . $downSecret,
+                    'bypass_path' => '/'.$downSecret,
                 ]);
                 $run->update(['meta' => $meta]);
 
@@ -311,7 +323,7 @@ class RunRestoreJob implements ShouldQueue
 
             $step = 'stage_restic_restore';
             $lockHandle->heartbeat(['step' => $step]);
-            $stageTargetDir = $this->makeStagingTargetDir($projectRoot, $run->id ?? null);
+            $stageTargetDir = $this->makeStagingTargetDir($projectRoot, $run->id ?? null, (string) $mode);
             $cleanupPaths[] = $stageTargetDir;
 
             $restoreResult = $runner->restore(
@@ -341,18 +353,30 @@ class RunRestoreJob implements ShouldQueue
                 throw new \RuntimeException('Restored project path was not found in the snapshot.');
             }
 
-            $stagingSwapDir = $this->makeStagingSwapDir($projectRoot, $run->id ?? null);
-            $stageMove = $this->moveDirectory($restoredProjectPath, $stagingSwapDir, dirname($projectRoot));
-            $meta['steps']['stage_prepare'] = $stageMove;
+            if ($mode === 'atomic') {
+                $stagingSwapDir = $this->makeStagingSwapDir($projectRoot, $run->id ?? null);
+                $stageMove = $this->moveDirectory($restoredProjectPath, $stagingSwapDir, dirname($projectRoot));
+                $meta['steps']['stage_prepare'] = $stageMove;
+
+                if (($stageMove['exit_code'] ?? 1) !== 0) {
+                    throw new \RuntimeException('Failed to prepare staging directory.');
+                }
+            } else {
+                $stagingSwapDir = $restoredProjectPath;
+                $meta['steps']['stage_prepare'] = [
+                    'exit_code' => 0,
+                    'mode' => $mode,
+                    'source' => $restoredProjectPath,
+                    'destination' => $restoredProjectPath,
+                    'note' => 'Rsync mode uses restored project path directly.',
+                ];
+            }
+
             $meta['restore'] = array_merge($meta['restore'] ?? [], [
                 'staging_target' => $stageTargetDir,
                 'staging_dir' => $stagingSwapDir,
             ]);
             $run->update(['meta' => $meta]);
-
-            if (($stageMove['exit_code'] ?? 1) !== 0) {
-                throw new \RuntimeException('Failed to prepare staging directory.');
-            }
 
             $step = 'stage_validate';
             $lockHandle->heartbeat(['step' => $step]);
@@ -389,7 +413,7 @@ class RunRestoreJob implements ShouldQueue
             $downSecret = $this->generateDownSecret();
             $meta['restore'] = array_merge($meta['restore'] ?? [], [
                 'secret' => $downSecret,
-                'bypass_path' => '/' . $downSecret,
+                'bypass_path' => '/'.$downSecret,
             ]);
             $run->update(['meta' => $meta]);
 
@@ -789,8 +813,8 @@ class RunRestoreJob implements ShouldQueue
 
         $tags = [
             'safety-before-restore',
-            'restore:' . ($snapshot['short_id'] ?? 'unknown'),
-            'run:' . $runId,
+            'restore:'.($snapshot['short_id'] ?? 'unknown'),
+            'run:'.$runId,
             'trigger:restore',
         ];
 
@@ -820,8 +844,8 @@ class RunRestoreJob implements ShouldQueue
     protected function restoreFilesRsync(string $sourcePath, string $projectRoot): array
     {
         $rsync = $this->findBinary('rsync');
-        $source = rtrim($sourcePath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-        $target = rtrim($projectRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        $source = rtrim($sourcePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
+        $target = rtrim($projectRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
 
         $command = [
             $rsync,
@@ -839,12 +863,12 @@ class RunRestoreJob implements ShouldQueue
     protected function restoreFilesAtomic(string $sourcePath, string $projectRoot, int $runId): array
     {
         $rsync = $this->findBinary('rsync');
-        $source = rtrim($sourcePath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        $source = rtrim($sourcePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
         $projectRoot = rtrim($projectRoot, DIRECTORY_SEPARATOR);
 
         $parent = dirname($projectRoot);
-        $newDir = $projectRoot . '.__restored_' . $runId;
-        $oldDir = $projectRoot . '.__before_restore_' . Carbon::now()->format('YmdHis');
+        $newDir = $projectRoot.'.__restored_'.$runId;
+        $oldDir = $projectRoot.'.__before_restore_'.Carbon::now()->format('YmdHis');
 
         $this->ensureDirectory($parent, mustBeWritable: true, context: 'project_root');
 
@@ -854,7 +878,7 @@ class RunRestoreJob implements ShouldQueue
             '--exclude=.env',
             '--exclude=storage/framework/down',
             $source,
-            rtrim($newDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR,
+            rtrim($newDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR,
         ];
 
         $syncResult = $this->runProcess($syncCommand, $projectRoot);
@@ -863,8 +887,8 @@ class RunRestoreJob implements ShouldQueue
             return $syncResult;
         }
 
-        $envPath = $projectRoot . DIRECTORY_SEPARATOR . '.env';
-        $newEnvPath = $newDir . DIRECTORY_SEPARATOR . '.env';
+        $envPath = $projectRoot.DIRECTORY_SEPARATOR.'.env';
+        $newEnvPath = $newDir.DIRECTORY_SEPARATOR.'.env';
 
         if (is_file($envPath)) {
             $this->ensureDirectory($newDir, mustBeWritable: true, context: 'restore_target');
@@ -896,7 +920,7 @@ class RunRestoreJob implements ShouldQueue
 
     protected function restoreDatabase(string $restoredProjectPath, string $connectionName, string $projectRoot): array
     {
-        $dumpPath = $restoredProjectPath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        $dumpPath = $restoredProjectPath.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
 
         if (! is_file($dumpPath)) {
             return [
@@ -971,19 +995,19 @@ class RunRestoreJob implements ShouldQueue
         $useSocket = $socket !== null && ($hostNormalized === null || $hostNormalized === 'localhost');
 
         if ($useSocket) {
-            $command[] = '--socket=' . $socket;
+            $command[] = '--socket='.$socket;
         } else {
             if ($hostNormalized !== null && $hostNormalized !== 'localhost') {
-                $command[] = '--host=' . $host;
+                $command[] = '--host='.$host;
             }
 
             if ($port !== null && $hostNormalized !== 'localhost') {
-                $command[] = '--port=' . $port;
+                $command[] = '--port='.$port;
             }
         }
 
         if ($user !== null) {
-            $command[] = '--user=' . $user;
+            $command[] = '--user='.$user;
         }
 
         $command[] = $database;
@@ -1037,7 +1061,7 @@ class RunRestoreJob implements ShouldQueue
                     if (! is_string($name) || $name === '' || isset($excludeSet[$name])) {
                         continue;
                     }
-                    $connection->statement('DROP TABLE IF EXISTS `' . str_replace('`', '``', $name) . '`');
+                    $connection->statement('DROP TABLE IF EXISTS `'.str_replace('`', '``', $name).'`');
                     $droppedTables++;
                 }
 
@@ -1047,7 +1071,7 @@ class RunRestoreJob implements ShouldQueue
                     if (! is_string($name) || $name === '' || isset($excludeSet[$name])) {
                         continue;
                     }
-                    $connection->statement('DROP VIEW IF EXISTS `' . str_replace('`', '``', $name) . '`');
+                    $connection->statement('DROP VIEW IF EXISTS `'.str_replace('`', '``', $name).'`');
                     $droppedViews++;
                 }
 
@@ -1059,7 +1083,7 @@ class RunRestoreJob implements ShouldQueue
                     if (! is_string($name) || $name === '' || isset($excludeSet[$name])) {
                         continue;
                     }
-                    $connection->statement('DROP TABLE IF EXISTS "' . str_replace('"', '""', $name) . '" CASCADE');
+                    $connection->statement('DROP TABLE IF EXISTS "'.str_replace('"', '""', $name).'" CASCADE');
                     $droppedTables++;
                 }
 
@@ -1069,7 +1093,7 @@ class RunRestoreJob implements ShouldQueue
                     if (! is_string($name) || $name === '' || isset($excludeSet[$name])) {
                         continue;
                     }
-                    $connection->statement('DROP VIEW IF EXISTS "' . str_replace('"', '""', $name) . '" CASCADE');
+                    $connection->statement('DROP VIEW IF EXISTS "'.str_replace('"', '""', $name).'" CASCADE');
                     $droppedViews++;
                 }
             } elseif ($driver === 'sqlite') {
@@ -1081,11 +1105,12 @@ class RunRestoreJob implements ShouldQueue
                         continue;
                     }
                     if ($type === 'view') {
-                        $connection->statement('DROP VIEW IF EXISTS "' . str_replace('"', '""', $name) . '"');
+                        $connection->statement('DROP VIEW IF EXISTS "'.str_replace('"', '""', $name).'"');
                         $droppedViews++;
+
                         continue;
                     }
-                    $connection->statement('DROP TABLE IF EXISTS "' . str_replace('"', '""', $name) . '"');
+                    $connection->statement('DROP TABLE IF EXISTS "'.str_replace('"', '""', $name).'"');
                     $droppedTables++;
                 }
             } else {
@@ -1127,7 +1152,7 @@ class RunRestoreJob implements ShouldQueue
         $this->ensureDirectory($base, context: 'restore_tmp');
 
         $suffix = $runId ? (string) $runId : Str::random(6);
-        $path = $base . DIRECTORY_SEPARATOR . 'restic-restore-' . $suffix . '-' . Carbon::now()->format('YmdHis');
+        $path = $base.DIRECTORY_SEPARATOR.'restic-restore-'.$suffix.'-'.Carbon::now()->format('YmdHis');
 
         $this->ensureDirectory($path, context: 'restore_tmp');
 
@@ -1138,7 +1163,7 @@ class RunRestoreJob implements ShouldQueue
     {
         $relative = ltrim($projectRoot, DIRECTORY_SEPARATOR);
 
-        return rtrim($restoreDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relative;
+        return rtrim($restoreDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relative;
     }
 
     protected function runArtisan(array $arguments, string $cwd): array
@@ -1153,7 +1178,7 @@ class RunRestoreJob implements ShouldQueue
         $arguments = ['down', '--force'];
 
         if ($secret !== null && $secret !== '') {
-            $arguments[] = '--secret=' . $secret;
+            $arguments[] = '--secret='.$secret;
         }
 
         $result = $this->runArtisan($arguments, $cwd);
@@ -1162,7 +1187,7 @@ class RunRestoreJob implements ShouldQueue
             $fallbackArguments = ['down'];
 
             if ($secret !== null && $secret !== '') {
-                $fallbackArguments[] = '--secret=' . $secret;
+                $fallbackArguments[] = '--secret='.$secret;
             }
 
             $result = $this->runArtisan($fallbackArguments, $cwd);
@@ -1180,7 +1205,7 @@ class RunRestoreJob implements ShouldQueue
     protected function artisanOptionMissing(array $result, string $option): bool
     {
         $needle = strtolower(ltrim($option, '-'));
-        $message = strtolower((string) ($result['stdout'] ?? '') . ' ' . (string) ($result['stderr'] ?? ''));
+        $message = strtolower((string) ($result['stdout'] ?? '').' '.(string) ($result['stderr'] ?? ''));
 
         return str_contains($message, 'option does not exist') && str_contains($message, $needle);
     }
@@ -1200,7 +1225,7 @@ class RunRestoreJob implements ShouldQueue
         }
 
         $result['exit_code'] = 0;
-        $result['note'] = trim(($result['note'] ?? '') . ' Application already in maintenance mode.');
+        $result['note'] = trim(($result['note'] ?? '').' Application already in maintenance mode.');
 
         return $result;
     }
@@ -1220,7 +1245,7 @@ class RunRestoreJob implements ShouldQueue
         }
 
         $result['exit_code'] = 0;
-        $result['note'] = trim(($result['note'] ?? '') . ' Application already up.');
+        $result['note'] = trim(($result['note'] ?? '').' Application already up.');
 
         return $result;
     }
@@ -1230,7 +1255,7 @@ class RunRestoreJob implements ShouldQueue
      */
     protected function artisanAlreadyDown(array $result): bool
     {
-        $message = strtolower((string) ($result['stdout'] ?? '') . ' ' . (string) ($result['stderr'] ?? ''));
+        $message = strtolower((string) ($result['stdout'] ?? '').' '.(string) ($result['stderr'] ?? ''));
 
         return str_contains($message, 'already down')
             || str_contains($message, 'already in maintenance')
@@ -1242,7 +1267,7 @@ class RunRestoreJob implements ShouldQueue
      */
     protected function artisanAlreadyUp(array $result): bool
     {
-        $message = strtolower((string) ($result['stdout'] ?? '') . ' ' . (string) ($result['stderr'] ?? ''));
+        $message = strtolower((string) ($result['stdout'] ?? '').' '.(string) ($result['stderr'] ?? ''));
 
         return str_contains($message, 'already up')
             || str_contains($message, 'not in maintenance');
@@ -1407,11 +1432,15 @@ class RunRestoreJob implements ShouldQueue
         return is_numeric($size) ? (int) $size : null;
     }
 
-    protected function makeStagingTargetDir(string $projectRoot, ?int $runId): string
+    protected function makeStagingTargetDir(string $projectRoot, ?int $runId, string $mode): string
     {
+        if ($mode !== 'atomic') {
+            return $this->makeRestoreDirectory($runId);
+        }
+
         $suffix = $runId ? (string) $runId : Str::random(6);
         $timestamp = Carbon::now()->format('YmdHis');
-        $path = $projectRoot . '.__restored_' . $suffix . '_' . $timestamp;
+        $path = $projectRoot.'.__restored_'.$suffix.'_'.$timestamp;
 
         $this->ensureDirectory($path, context: 'staging_target');
 
@@ -1420,9 +1449,11 @@ class RunRestoreJob implements ShouldQueue
 
     protected function makeStagingSwapDir(string $projectRoot, ?int $runId): string
     {
+        $this->ensureExistingDirectory(dirname($projectRoot), mustBeWritable: true, context: 'staging_parent');
+
         $suffix = $runId ? (string) $runId : Str::random(6);
         $timestamp = Carbon::now()->format('YmdHis');
-        $path = $projectRoot . '.__swap_' . $suffix . '_' . $timestamp;
+        $path = $projectRoot.'.__swap_'.$suffix.'_'.$timestamp;
 
         if (is_dir($path)) {
             throw new \RuntimeException('Staging swap directory already exists.');
@@ -1459,15 +1490,15 @@ class RunRestoreJob implements ShouldQueue
         }
 
         if ($this->requiresFiles($scope)) {
-            if (! is_file($stagingDir . DIRECTORY_SEPARATOR . 'artisan')) {
+            if (! is_file($stagingDir.DIRECTORY_SEPARATOR.'artisan')) {
                 $errors[] = 'artisan file missing in staged project.';
             }
 
-            if (! is_file($stagingDir . DIRECTORY_SEPARATOR . 'composer.json')) {
+            if (! is_file($stagingDir.DIRECTORY_SEPARATOR.'composer.json')) {
                 $errors[] = 'composer.json missing in staged project.';
             }
 
-            if (! is_file($stagingDir . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php')) {
+            if (! is_file($stagingDir.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'autoload.php')) {
                 if ($vendorExcluded) {
                     $warnings[] = 'vendor directory was excluded from the snapshot; run composer install after restore.';
                 } else {
@@ -1477,7 +1508,7 @@ class RunRestoreJob implements ShouldQueue
         }
 
         if ($this->requiresDb($scope)) {
-            $dumpPath = $stagingDir . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+            $dumpPath = $stagingDir.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
             if (! is_file($dumpPath)) {
                 $errors[] = 'Database dump file missing in staged project.';
             }
@@ -1507,7 +1538,7 @@ class RunRestoreJob implements ShouldQueue
             return false;
         }
 
-        $prefix = $path . '/';
+        $prefix = $path.'/';
 
         foreach ($excludes as $exclude) {
             $pattern = $this->normalizeExcludePattern($exclude);
@@ -1550,7 +1581,7 @@ class RunRestoreJob implements ShouldQueue
 
     protected function makeRollbackDir(string $projectRoot): string
     {
-        return $projectRoot . '.__before_restore_' . Carbon::now()->format('YmdHis');
+        return $projectRoot.'.__before_restore_'.Carbon::now()->format('YmdHis');
     }
 
     protected function swapDirectories(string $projectRoot, string $stagingDir, string $rollbackDir): array
@@ -1586,8 +1617,8 @@ class RunRestoreJob implements ShouldQueue
     protected function preserveEnvFromRollback(string $rollbackDir, string $projectRoot): array
     {
         $start = microtime(true);
-        $source = $rollbackDir . DIRECTORY_SEPARATOR . '.env';
-        $target = $projectRoot . DIRECTORY_SEPARATOR . '.env';
+        $source = $rollbackDir.DIRECTORY_SEPARATOR.'.env';
+        $target = $projectRoot.DIRECTORY_SEPARATOR.'.env';
 
         if (! is_file($source)) {
             return [
@@ -1617,7 +1648,7 @@ class RunRestoreJob implements ShouldQueue
 
     protected function resolveDumpPath(string $projectRoot): string
     {
-        return $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        return $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
     }
 
     /**
@@ -1649,7 +1680,7 @@ class RunRestoreJob implements ShouldQueue
         }
 
         $restoreDir = $this->makeRestoreDirectory($runId);
-        $targetPath = $restoreDir . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        $targetPath = $restoreDir.DIRECTORY_SEPARATOR.'db.sql.gz';
         $attempts = [];
         $dumpFailure = null;
 
@@ -1782,7 +1813,7 @@ class RunRestoreJob implements ShouldQueue
 
         $root = $this->normalizeScalar($projectRoot);
         if ($root !== null) {
-            $candidates[] = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+            $candidates[] = rtrim($root, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
         }
 
         $paths = $snapshotInfo['paths'] ?? [];
@@ -1798,7 +1829,7 @@ class RunRestoreJob implements ShouldQueue
                     continue;
                 }
 
-                $candidates[] = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+                $candidates[] = rtrim($path, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
             }
         }
 
@@ -1811,7 +1842,7 @@ class RunRestoreJob implements ShouldQueue
     {
         $relative = ltrim($snapshotPath, DIRECTORY_SEPARATOR);
 
-        return rtrim($restoreDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relative;
+        return rtrim($restoreDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relative;
     }
 
     protected function resticPathNotFound(string $stderr): bool
@@ -1837,7 +1868,7 @@ class RunRestoreJob implements ShouldQueue
 
     protected function resolveSafetyDumpPath(string $rollbackDir): ?string
     {
-        $path = $rollbackDir . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+        $path = $rollbackDir.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
 
         return is_file($path) ? $path : null;
     }
@@ -1863,7 +1894,7 @@ class RunRestoreJob implements ShouldQueue
         $safetyDumpPath = $this->normalizeScalar($restoreMeta['safety_dump_path'] ?? null);
         if ($safetyDumpPath !== null && ! is_file($safetyDumpPath)) {
             $restoreMeta['safety_dump_path_original'] = $safetyDumpPath;
-            $fallbackPath = $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
+            $fallbackPath = $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'_backup'.DIRECTORY_SEPARATOR.'db.sql.gz';
 
             if (is_file($fallbackPath)) {
                 $restoreMeta['safety_dump_path'] = $fallbackPath;
@@ -1928,10 +1959,10 @@ class RunRestoreJob implements ShouldQueue
     {
         $start = microtime(true);
         $paths = [
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'views',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'cache',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'sessions',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'testing',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'views',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'cache',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'sessions',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'testing',
         ];
         $errors = [];
 
@@ -1965,16 +1996,16 @@ class RunRestoreJob implements ShouldQueue
     {
         $start = microtime(true);
         $paths = [
-            $projectRoot . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'cache',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'cache',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'data',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'sessions',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'views',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'testing',
-            $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'logs',
+            $projectRoot.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'cache',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'cache'.DIRECTORY_SEPARATOR.'data',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'sessions',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'views',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'testing',
+            $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'logs',
         ];
         $errors = [];
         $ensured = [];
@@ -2014,7 +2045,7 @@ class RunRestoreJob implements ShouldQueue
                 continue;
             }
 
-            $fullPath = $path . DIRECTORY_SEPARATOR . $item;
+            $fullPath = $path.DIRECTORY_SEPARATOR.$item;
 
             if (is_dir($fullPath)) {
                 $this->cleanupDirectory($fullPath);
@@ -2037,7 +2068,7 @@ class RunRestoreJob implements ShouldQueue
     protected function attemptRollback(string $projectRoot, string $rollbackDir): array
     {
         $parent = dirname($projectRoot);
-        $failedDir = $projectRoot . '.__failed_restore_' . Carbon::now()->format('YmdHis');
+        $failedDir = $projectRoot.'.__failed_restore_'.Carbon::now()->format('YmdHis');
 
         $moveFailed = is_dir($projectRoot)
             ? $this->runProcess(['mv', $projectRoot, $failedDir], $parent)
@@ -2083,7 +2114,7 @@ class RunRestoreJob implements ShouldQueue
     {
         return array_merge($primary, [
             'exit_code' => 1,
-            'stderr' => trim(($primary['stderr'] ?? '') . PHP_EOL . $message),
+            'stderr' => trim(($primary['stderr'] ?? '').PHP_EOL.$message),
             'secondary' => $secondary,
         ], $extra);
     }
@@ -2159,7 +2190,7 @@ class RunRestoreJob implements ShouldQueue
                 continue;
             }
 
-            $full = $path . DIRECTORY_SEPARATOR . $item;
+            $full = $path.DIRECTORY_SEPARATOR.$item;
 
             if (is_dir($full)) {
                 $this->cleanupDirectory($full);
@@ -2247,7 +2278,7 @@ class RunRestoreJob implements ShouldQueue
             return $value;
         }
 
-        return substr($value, 0, $limit) . PHP_EOL . '...[truncated]';
+        return substr($value, 0, $limit).PHP_EOL.'...[truncated]';
     }
 
     /**
@@ -2264,7 +2295,7 @@ class RunRestoreJob implements ShouldQueue
                 return $argument;
             }
 
-            return '"' . addcslashes($argument, '"\\') . '"';
+            return '"'.addcslashes($argument, '"\\').'"';
         }, $command);
 
         return implode(' ', $escaped);
@@ -2434,18 +2465,18 @@ class RunRestoreJob implements ShouldQueue
         }
 
         if ($host !== null) {
-            $command[] = '--host=' . $host;
+            $command[] = '--host='.$host;
         }
 
         if ($port !== null) {
-            $command[] = '--port=' . $port;
+            $command[] = '--port='.$port;
         }
 
         if ($user !== null) {
-            $command[] = '--username=' . $user;
+            $command[] = '--username='.$user;
         }
 
-        $command[] = '--dbname=' . $database;
+        $command[] = '--dbname='.$database;
 
         $env = [];
         $password = $this->normalizeScalar($connection['password'] ?? null);
@@ -2599,19 +2630,19 @@ class RunRestoreJob implements ShouldQueue
         $useSocket = $socket !== null && ($hostNormalized === null || $hostNormalized === 'localhost');
 
         if ($useSocket) {
-            $command[] = '--socket=' . $socket;
+            $command[] = '--socket='.$socket;
         } else {
             if ($hostNormalized !== null && $hostNormalized !== 'localhost') {
-                $command[] = '--host=' . $host;
+                $command[] = '--host='.$host;
             }
 
             if ($port !== null && $hostNormalized !== 'localhost') {
-                $command[] = '--port=' . $port;
+                $command[] = '--port='.$port;
             }
         }
 
         if ($user !== null) {
-            $command[] = '--user=' . $user;
+            $command[] = '--user='.$user;
         }
 
         $command[] = $database;
@@ -2635,10 +2666,10 @@ class RunRestoreJob implements ShouldQueue
             }
 
             if ($prefix !== null && $prefix !== '' && ! str_starts_with($table, $prefix)) {
-                $table = $prefix . $table;
+                $table = $prefix.$table;
             }
 
-            $flags[] = '--ignore-table=' . $database . '.' . $table;
+            $flags[] = '--ignore-table='.$database.'.'.$table;
         }
 
         return array_values(array_unique($flags));
@@ -2724,7 +2755,7 @@ class RunRestoreJob implements ShouldQueue
             $set[$table] = true;
 
             if ($prefix !== '' && ! str_starts_with($table, $prefix)) {
-                $set[$prefix . $table] = true;
+                $set[$prefix.$table] = true;
             }
         }
 
@@ -2830,7 +2861,7 @@ class RunRestoreJob implements ShouldQueue
         $warnings = $this->mysqlDumpWarningsFromFlags($originalFlags, $finalFlags);
 
         if ($warnings === []) {
-            $warnings[] = 'Mysql dump completed with permission warnings for: ' . implode(', ', $warningFlags);
+            $warnings[] = 'Mysql dump completed with permission warnings for: '.implode(', ', $warningFlags);
         }
 
         $result['warnings'] = array_values(array_merge(
@@ -2855,7 +2886,7 @@ class RunRestoreJob implements ShouldQueue
         }
 
         return [
-            'Mysql dump retried without: ' . implode(', ', $removed),
+            'Mysql dump retried without: '.implode(', ', $removed),
         ];
     }
 
@@ -2887,7 +2918,7 @@ class RunRestoreJob implements ShouldQueue
         $dumpMeta['warnings'] = array_values(array_merge(
             $dumpMeta['warnings'] ?? [],
             [
-                'Mysql dump completed with permission warnings for: ' . implode(', ', $warningFlags),
+                'Mysql dump completed with permission warnings for: '.implode(', ', $warningFlags),
             ],
         ));
 
@@ -2932,7 +2963,7 @@ class RunRestoreJob implements ShouldQueue
 
     protected function findBinary(string $binary): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
         $path = $finder->find($binary);
 
         if ($path === null) {
@@ -2947,7 +2978,7 @@ class RunRestoreJob implements ShouldQueue
      */
     protected function findBinaryFromCandidates(array $candidates): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
 
         foreach ($candidates as $candidate) {
             $path = $finder->find($candidate);

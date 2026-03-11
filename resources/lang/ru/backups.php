@@ -425,6 +425,8 @@ return [
                     'result_fail' => 'FAIL',
                     'same_fs_ok' => ' / та же ФС: OK',
                     'same_fs_fail' => ' / та же ФС: FAIL',
+                    'staging_parent_ok' => ' / родитель staging: запись OK',
+                    'staging_parent_fail' => ' / родитель staging: запись FAIL',
                 ],
                 'confirmation' => [
                     'phrase_label' => 'Фраза подтверждения',
@@ -451,12 +453,12 @@ return [
                 'create_snapshot_modal_heading' => 'Создать снапшот',
                 'create_snapshot_modal_description' => 'Запустит задачу бэкапа и создаст новый снапшот.',
             ],
-                'table' => [
-                    'columns' => [
-                        'id' => 'ID запуска',
-                        'started' => 'Начато',
-                        'finished' => 'Завершено',
-                        'type' => 'Тип',
+            'table' => [
+                'columns' => [
+                    'id' => 'ID запуска',
+                    'started' => 'Начато',
+                    'finished' => 'Завершено',
+                    'type' => 'Тип',
                     'status' => 'Статус',
                     'duration' => 'Длительность',
                     'trigger' => 'Триггер',

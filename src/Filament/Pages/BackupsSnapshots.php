@@ -15,13 +15,13 @@ use Filament\Schemas\Components\Actions as ActionsComponent;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Text;
-use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Components\Wizard\Step;
 use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
-use Filament\Tables\Columns\ViewColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Columns\ViewColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\Filter;
@@ -29,8 +29,8 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\HtmlString;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Jobs\ExportSnapshotArchiveJob;
@@ -45,6 +45,7 @@ use Siteko\FilamentResticBackups\Support\OperationLock;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
+
 use function Filament\Support\generate_loading_indicator_html;
 
 class BackupsSnapshots extends BaseBackupsPage implements HasTable
@@ -52,6 +53,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     use InteractsWithTable;
 
     private const SNAPSHOT_CACHE_SECONDS = 10;
+
     private const ERROR_SNIPPET_LIMIT = 1500;
 
     /**
@@ -113,10 +115,10 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     public function table(Table $table): Table
     {
         return $table
-            ->records(fn(
+            ->records(fn (
                 array $filters = [],
-                int | string $page = 1,
-                int | string $recordsPerPage = 25,
+                int|string $page = 1,
+                int|string $recordsPerPage = 25,
                 ?string $sortColumn = null,
                 ?string $sortDirection = null,
             ): LengthAwarePaginator => $this->getSnapshotRecords(
@@ -131,21 +133,21 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 TextColumn::make('short_id')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.id'))
                     ->copyable()
-                    ->copyableState(fn(array $record): string => (string) ($record['id'] ?? $record['short_id'] ?? ''))
-                    ->tooltip(fn(array $record): ?string => $record['id'] ?? null)
+                    ->copyableState(fn (array $record): string => (string) ($record['id'] ?? $record['short_id'] ?? ''))
+                    ->tooltip(fn (array $record): ?string => $record['id'] ?? null)
                     ->toggleable(),
                 TextColumn::make('time')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.time'))
-                    ->dateTime(timezone: fn(): string => $this->displayTimezone())
+                    ->dateTime(timezone: fn (): string => $this->displayTimezone())
                     ->sortable(),
                 TextColumn::make('size')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.size'))
-                    ->state(fn(array $record): ?int => $record['size_bytes'] ?? null)
-                    ->formatStateUsing(fn($state): string => $this->formatBytes(is_numeric($state) ? (int) $state : null))
+                    ->state(fn (array $record): ?int => $record['size_bytes'] ?? null)
+                    ->formatStateUsing(fn ($state): string => $this->formatBytes(is_numeric($state) ? (int) $state : null))
                     ->toggleable(),
                 TextColumn::make('tags')
                     ->label(__('restic-backups::backups.pages.snapshots.table.columns.tags'))
-                    ->state(fn(array $record): array => $record['tags'] ?? [])
+                    ->state(fn (array $record): array => $record['tags'] ?? [])
                     ->badge()
                     ->listWithLineBreaks()
                     ->limitList(3)
@@ -160,11 +162,11 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ->filters([
                 SelectFilter::make('tag')
                     ->label(__('restic-backups::backups.pages.snapshots.table.filters.tag'))
-                    ->options(fn(): array => $this->getTagOptions())
+                    ->options(fn (): array => $this->getTagOptions())
                     ->searchable(),
                 SelectFilter::make('host')
                     ->label(__('restic-backups::backups.pages.snapshots.table.filters.host'))
-                    ->options(fn(): array => $this->getHostOptions())
+                    ->options(fn (): array => $this->getHostOptions())
                     ->searchable(),
                 Filter::make('time')
                     ->label(__('restic-backups::backups.pages.snapshots.table.filters.date_range'))
@@ -181,9 +183,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.restore.modal_heading'))
                     ->modalSubmitActionLabel(__('restic-backups::backups.pages.snapshots.actions.restore.modal_submit_label'))
                     ->modalSubmitAction(function (Action $action): Action {
-                        return $action->disabled(fn(): bool => ! $this->restorePreflightOk);
+                        return $action->disabled(fn (): bool => ! $this->restorePreflightOk);
                     })
-                    ->steps(fn(array $record): array => $this->buildRestoreSteps($record))
+                    ->steps(fn (array $record): array => $this->buildRestoreSteps($record))
                     ->action(function (array $data, array $record): void {
                         $scope = $this->normalizeRestoreScope((string) ($data['scope'] ?? 'files'));
                         $mode = $scope === 'db'
@@ -203,7 +205,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->danger()
                                 ->send();
 
-                            throw new Halt();
+                            throw new Halt;
                         }
 
                         if (! $this->preflightOkFromData($preflightBase, $data)) {
@@ -213,7 +215,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->danger()
                                 ->send();
 
-                            throw new Halt();
+                            throw new Halt;
                         }
 
                         $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
@@ -225,7 +227,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->danger()
                                 ->send();
 
-                            throw new Halt();
+                            throw new Halt;
                         }
 
                         $lockInfo = app(OperationLock::class)->getInfo();
@@ -234,20 +236,20 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
 
                             if (! empty($lockInfo['type'])) {
-                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
+                                $message .= ' '.__('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
                                     'type' => $lockInfo['type'],
                                 ]);
                             }
 
                             if (! empty($lockInfo['run_id'])) {
-                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
+                                $message .= ' '.__('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
                                     'run_id' => $lockInfo['run_id'],
                                 ]);
                             }
 
                             Notification::make()
                                 ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
-                                ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.restore_waits'))
+                                ->body($message.' '.__('restic-backups::backups.pages.snapshots.notifications.restore_waits'))
                                 ->warning()
                                 ->send();
                         }
@@ -271,8 +273,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->icon('heroicon-o-arrow-down-tray')
                     ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.export.modal_heading'))
                     ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.export.modal_description'))
-                    ->visible(fn(array $record): bool => ! $this->isArchiveReady($record))
-                    ->disabled(fn(): bool => $this->snapshotError !== null)
+                    ->visible(fn (array $record): bool => ! $this->isArchiveReady($record))
+                    ->disabled(fn (): bool => $this->snapshotError !== null)
                     ->form([
                         Toggle::make('include_env')
                             ->label(__('restic-backups::backups.pages.snapshots.actions.export.include_env_label'))
@@ -296,7 +298,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->danger()
                                 ->send();
 
-                            throw new Halt();
+                            throw new Halt;
                         }
 
                         $includeEnv = (bool) ($data['include_env'] ?? false);
@@ -306,7 +308,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         if (is_array($lockInfo)) {
                             Notification::make()
                                 ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
-                                ->body(__('restic-backups::backups.pages.snapshots.notifications.operation_running') . ' ' . __('restic-backups::backups.pages.snapshots.notifications.export_waits'))
+                                ->body(__('restic-backups::backups.pages.snapshots.notifications.operation_running').' '.__('restic-backups::backups.pages.snapshots.notifications.export_waits'))
                                 ->warning()
                                 ->send();
                         }
@@ -332,7 +334,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->color('danger')
                     ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.delete.modal_heading'))
                     ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.delete.modal_description'))
-                    ->disabled(fn(): bool => $this->snapshotError !== null)
+                    ->disabled(fn (): bool => $this->snapshotError !== null)
                     ->schema(function (array $record): array {
                         $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
                         $shortId = (string) ($record['short_id'] ?? substr($snapshotId, 0, 8));
@@ -357,7 +359,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->danger()
                                 ->send();
 
-                            throw new Halt();
+                            throw new Halt;
                         }
 
                         $confirmation = trim((string) ($data['confirmation'] ?? ''));
@@ -369,7 +371,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->danger()
                                 ->send();
 
-                            throw new Halt();
+                            throw new Halt;
                         }
 
                         $lockInfo = app(OperationLock::class)->getInfo();
@@ -378,20 +380,20 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
 
                             if (! empty($lockInfo['type'])) {
-                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
+                                $message .= ' '.__('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
                                     'type' => $lockInfo['type'],
                                 ]);
                             }
 
                             if (! empty($lockInfo['run_id'])) {
-                                $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
+                                $message .= ' '.__('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
                                     'run_id' => $lockInfo['run_id'],
                                 ]);
                             }
 
                             Notification::make()
                                 ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
-                                ->body($message . ' ' . __('restic-backups::backups.pages.snapshots.notifications.delete_waits'))
+                                ->body($message.' '.__('restic-backups::backups.pages.snapshots.notifications.delete_waits'))
                                 ->warning()
                                 ->send();
                         }
@@ -410,12 +412,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->icon('heroicon-o-document-text')
                     ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.details.modal_heading'))
                     ->modalSubmitAction(false)
-                    ->modalContent(fn(array $record) => view('restic-backups::snapshots.details', [
+                    ->modalContent(fn (array $record) => view('restic-backups::snapshots.details', [
                         'record' => $record,
                     ])),
             ])
             ->paginationPageOptions([25, 50, 100])
-            ->poll(self::SNAPSHOT_CACHE_SECONDS . 's');
+            ->poll(self::SNAPSHOT_CACHE_SECONDS.'s');
     }
 
     public function content(Schema $schema): Schema
@@ -437,16 +439,16 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ]))
                 ->description(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.description'))
                 ->schema([
-                    Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.started_at', [
+                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.started_at', [
                         'started_at' => $startedAt,
                     ])),
-                    Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.step', [
+                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.step', [
                         'step' => $operationStep,
                     ])),
-                    Text::make(fn(): HtmlString => $this->formatActivityLine($lastActivity, ! $lockStale)),
+                    Text::make(fn (): HtmlString => $this->formatActivityLine($lastActivity, ! $lockStale)),
                     Text::make(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.stale_warning'))
                         ->color('danger')
-                        ->visible(fn(): bool => $lockStale),
+                        ->visible(fn (): bool => $lockStale),
                 ]);
         }
 
@@ -462,9 +464,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             $components[] = Section::make($issueTitle)
                 ->description($issueDescription)
                 ->schema([
-                    Text::make(fn(): string => $this->snapshotError ?? __('restic-backups::backups.pages.snapshots.sections.repository_issue.unknown_error'))
+                    Text::make(fn (): string => $this->snapshotError ?? __('restic-backups::backups.pages.snapshots.sections.repository_issue.unknown_error'))
                         ->color($issueColor),
-                    Text::make(fn(): string => $this->snapshotErrorDetails ?? '')
+                    Text::make(fn (): string => $this->snapshotErrorDetails ?? '')
                         ->color('gray'),
                     ActionsComponent::make([
                         Action::make('openSettings')
@@ -502,7 +504,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 ->requiresConfirmation()
                 ->modalHeading(__('restic-backups::backups.pages.snapshots.header_actions.create_snapshot_modal_heading'))
                 ->modalDescription(__('restic-backups::backups.pages.snapshots.header_actions.create_snapshot_modal_description'))
-                ->disabled(fn(): bool => $this->hasRunningOperations())
+                ->disabled(fn (): bool => $this->hasRunningOperations())
                 ->action(function (): void {
                     $lockInfo = app(OperationLock::class)->getInfo();
 
@@ -510,13 +512,13 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         $message = __('restic-backups::backups.pages.snapshots.notifications.operation_running');
 
                         if (! empty($lockInfo['type'])) {
-                            $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
+                            $message .= ' '.__('restic-backups::backups.pages.snapshots.notifications.operation_running_type', [
                                 'type' => $lockInfo['type'],
                             ]);
                         }
 
                         if (! empty($lockInfo['run_id'])) {
-                            $message .= ' ' . __('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
+                            $message .= ' '.__('restic-backups::backups.pages.snapshots.notifications.operation_running_run_id', [
                                 'run_id' => $lockInfo['run_id'],
                             ]);
                         }
@@ -527,7 +529,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             ->warning()
                             ->send();
 
-                        throw new Halt();
+                        throw new Halt;
                     }
 
                     RunBackupJob::dispatch([], 'manual', null, true, auth()->id());
@@ -554,8 +556,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
      */
     protected function getSnapshotRecords(
         array $filters,
-        int | string $page,
-        int | string $recordsPerPage,
+        int|string $page,
+        int|string $recordsPerPage,
         ?string $sortColumn,
         ?string $sortDirection,
     ): LengthAwarePaginator {
@@ -565,7 +567,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         $tag = $filters['tag']['value'] ?? null;
         if (is_string($tag) && $tag !== '') {
-            $records = $records->filter(fn(array $record): bool => in_array($tag, $record['tags'] ?? [], true));
+            $records = $records->filter(fn (array $record): bool => in_array($tag, $record['tags'] ?? [], true));
         }
 
         $host = $filters['host']['value'] ?? null;
@@ -584,14 +586,14 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         if ($from) {
             $fromTimestamp = $this->parseDateToTimestamp($from, 'start');
             if ($fromTimestamp !== null) {
-                $records = $records->filter(fn(array $record): bool => ($record['time_unix'] ?? 0) >= $fromTimestamp);
+                $records = $records->filter(fn (array $record): bool => ($record['time_unix'] ?? 0) >= $fromTimestamp);
             }
         }
 
         if ($until) {
             $untilTimestamp = $this->parseDateToTimestamp($until, 'end');
             if ($untilTimestamp !== null) {
-                $records = $records->filter(fn(array $record): bool => ($record['time_unix'] ?? 0) <= $untilTimestamp);
+                $records = $records->filter(fn (array $record): bool => ($record['time_unix'] ?? 0) <= $untilTimestamp);
             }
         }
 
@@ -599,7 +601,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $descending = $sortDirection !== 'asc';
 
         $records = $records->sortBy(
-            fn(array $record) => $this->resolveSortValue($record, $sortColumn),
+            fn (array $record) => $this->resolveSortValue($record, $sortColumn),
             SORT_REGULAR,
             $descending,
         );
@@ -630,7 +632,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         }
 
         $snapshotIds = collect($items)
-            ->map(fn(array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
+            ->map(fn (array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
             ->filter()
             ->unique()
             ->values()
@@ -683,7 +685,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         }
 
         $snapshotIds = collect($items)
-            ->map(fn(array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
+            ->map(fn (array $item): ?string => $this->normalizeScalar($item['id'] ?? null))
             ->filter()
             ->unique()
             ->values()
@@ -1039,8 +1041,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         ?int $exitCode,
         bool $notify,
         bool $isLock = false,
-    ): void
-    {
+    ): void {
         $this->snapshotError = $message;
         $this->snapshotErrorDetails = $this->sanitizeErrorDetails($details);
         $this->snapshotExitCode = $exitCode;
@@ -1056,7 +1057,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             $prefix = __('restic-backups::backups.pages.snapshots.errors.exit_code', [
                 'code' => $exitCode,
             ]);
-            $body = $body !== '' ? $prefix . ' ' . $body : $prefix;
+            $body = $body !== '' ? $prefix.' '.$body : $prefix;
         }
 
         $notification = Notification::make()
@@ -1166,7 +1167,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $spinner = generate_loading_indicator_html()->toHtml();
 
         return new HtmlString(
-            '<span class="rb-inline">' . $spinner . '<span>' . e($label) . '</span></span>',
+            '<span class="rb-inline">'.$spinner.'<span>'.e($label).'</span></span>',
         );
     }
 
@@ -1197,7 +1198,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return $value;
         }
 
-        return substr($value, 0, self::ERROR_SNIPPET_LIMIT) . PHP_EOL . __('restic-backups::backups.pages.snapshots.errors.truncated');
+        return substr($value, 0, self::ERROR_SNIPPET_LIMIT).PHP_EOL.__('restic-backups::backups.pages.snapshots.errors.truncated');
     }
 
     protected function isResticLockError(?string $message): bool
@@ -1217,7 +1218,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
     protected function formatPathsSummary(array $paths): string
     {
-        $paths = array_values(array_filter($paths, fn(string $path): bool => trim($path) !== ''));
+        $paths = array_values(array_filter($paths, fn (string $path): bool => trim($path) !== ''));
 
         if ($paths === []) {
             return '—';
@@ -1230,12 +1231,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return $first;
         }
 
-        return $first . ' +' . $remaining;
+        return $first.' +'.$remaining;
     }
 
     protected function formatPathsTooltip(array $paths): ?string
     {
-        $paths = array_values(array_filter($paths, fn(string $path): bool => trim($path) !== ''));
+        $paths = array_values(array_filter($paths, fn (string $path): bool => trim($path) !== ''));
 
         if ($paths === []) {
             return null;
@@ -1354,6 +1355,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             ? __('restic-backups::backups.pages.snapshots.wizard.preflight.result_ok')
                             : __('restic-backups::backups.pages.snapshots.wizard.preflight.result_fail');
                         $sameFs = $preflightBase['same_filesystem'] ?? null;
+                        $stagingParentWritable = $preflightBase['staging_parent_writable'] ?? null;
                         $scope = $this->normalizeRestoreScope((string) ($get('scope') ?? 'files'));
                         $mode = $scope === 'db'
                             ? 'rsync'
@@ -1364,10 +1366,16 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             $suffix = $sameFs
                                 ? __('restic-backups::backups.pages.snapshots.wizard.preflight.same_fs_ok')
                                 : __('restic-backups::backups.pages.snapshots.wizard.preflight.same_fs_fail');
+
+                            if ($stagingParentWritable !== null) {
+                                $suffix .= $stagingParentWritable
+                                    ? __('restic-backups::backups.pages.snapshots.wizard.preflight.staging_parent_ok')
+                                    : __('restic-backups::backups.pages.snapshots.wizard.preflight.staging_parent_fail');
+                            }
                         }
 
                         return __('restic-backups::backups.pages.snapshots.wizard.preflight.result', [
-                            'result' => $ok . $suffix,
+                            'result' => $ok.$suffix,
                         ]);
                     })->color(function (Get $get) use ($preflightBase): string {
                         return $this->preflightOkForState($get, $preflightBase) ? 'success' : 'danger';
@@ -1378,7 +1386,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     TextInput::make('confirmation_phrase')
                         ->label(__('restic-backups::backups.pages.snapshots.wizard.confirmation.phrase_label'))
                         ->disabled()
-                        ->dehydrated(fn(): bool => true)
+                        ->dehydrated(fn (): bool => true)
                         ->default(function (Get $get) use ($record): string {
                             $scope = $this->normalizeRestoreScope((string) ($get('scope') ?? 'files'));
 
@@ -1456,6 +1464,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     {
         $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
         $projectRoot = $this->resolveProjectRoot();
+        $stagingParent = dirname($projectRoot);
         $freeBytes = $this->getDiskFreeBytes($projectRoot);
         $expectedBytes = null;
         $source = null;
@@ -1485,7 +1494,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             'free_bytes' => $freeBytes,
             'expected_bytes' => $expectedBytes,
             'source' => $source,
-            'same_filesystem' => $this->sameFilesystem($projectRoot, dirname($projectRoot)),
+            'same_filesystem' => $this->sameFilesystem($projectRoot, $stagingParent),
+            'staging_parent_writable' => is_writable($stagingParent),
         ];
     }
 
@@ -1523,8 +1533,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         if ($scope !== 'db' && $mode === 'atomic') {
             $sameFs = $base['same_filesystem'] ?? null;
+            $stagingParentWritable = $base['staging_parent_writable'] ?? null;
 
-            if ($sameFs !== true) {
+            if ($sameFs !== true || $stagingParentWritable !== true) {
                 return false;
             }
         }
@@ -1550,7 +1561,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         return (int) ceil(($expected * 1.15) + (2 * 1024 * 1024 * 1024));
     }
 
-    protected function formatBytes(int | float | null $bytes): string
+    protected function formatBytes(int|float|null $bytes): string
     {
         if ($bytes === null) {
             return __('restic-backups::backups.pages.snapshots.placeholders.not_available');
@@ -1559,22 +1570,22 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $bytes = (float) $bytes;
 
         if ($bytes < 1024) {
-            return number_format($bytes, 0) . ' B';
+            return number_format($bytes, 0).' B';
         }
 
         $kb = $bytes / 1024;
         if ($kb < 1024) {
-            return number_format($kb, 1) . ' KB';
+            return number_format($kb, 1).' KB';
         }
 
         $mb = $kb / 1024;
         if ($mb < 1024) {
-            return number_format($mb, 1) . ' MB';
+            return number_format($mb, 1).' MB';
         }
 
         $gb = $mb / 1024;
 
-        return number_format($gb, 1) . ' GB';
+        return number_format($gb, 1).' GB';
     }
 
     /**
@@ -1628,7 +1639,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             return null;
         }
 
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
         $du = $finder->find('du');
 
         if ($du === null) {
@@ -1735,12 +1746,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $tags = collect($this->snapshotRecords ?? [])
             ->pluck('tags')
             ->flatten()
-            ->filter(fn(?string $tag): bool => is_string($tag) && $tag !== '')
+            ->filter(fn (?string $tag): bool => is_string($tag) && $tag !== '')
             ->unique()
             ->sort()
             ->values();
 
-        return $tags->mapWithKeys(fn(string $tag): array => [$tag => $tag])->all();
+        return $tags->mapWithKeys(fn (string $tag): array => [$tag => $tag])->all();
     }
 
     /**
@@ -1752,12 +1763,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
         $hosts = collect($this->snapshotRecords ?? [])
             ->pluck('hostname')
-            ->filter(fn(?string $host): bool => is_string($host) && $host !== '')
+            ->filter(fn (?string $host): bool => is_string($host) && $host !== '')
             ->unique()
             ->sort()
             ->values();
 
-        return $hosts->mapWithKeys(fn(string $host): array => [$host => $host])->all();
+        return $hosts->mapWithKeys(fn (string $host): array => [$host => $host])->all();
     }
 
     protected function resolveSortValue(array $record, string $column): mixed

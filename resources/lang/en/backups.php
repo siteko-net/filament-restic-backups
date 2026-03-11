@@ -425,6 +425,8 @@ return [
                     'result_fail' => 'FAIL',
                     'same_fs_ok' => ' / same FS: OK',
                     'same_fs_fail' => ' / same FS: FAIL',
+                    'staging_parent_ok' => ' / staging parent writable: OK',
+                    'staging_parent_fail' => ' / staging parent writable: FAIL',
                 ],
                 'confirmation' => [
                     'phrase_label' => 'Confirmation phrase',
@@ -451,12 +453,12 @@ return [
                 'create_snapshot_modal_heading' => 'Create snapshot',
                 'create_snapshot_modal_description' => 'This will start a backup job and create a new snapshot.',
             ],
-                'table' => [
-                    'columns' => [
-                        'id' => 'Run ID',
-                        'started' => 'Started',
-                        'finished' => 'Finished',
-                        'type' => 'Type',
+            'table' => [
+                'columns' => [
+                    'id' => 'Run ID',
+                    'started' => 'Started',
+                    'finished' => 'Finished',
+                    'type' => 'Type',
                     'status' => 'Status',
                     'duration' => 'Duration',
                     'trigger' => 'Trigger',
