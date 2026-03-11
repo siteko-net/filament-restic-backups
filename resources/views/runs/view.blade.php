@@ -51,6 +51,18 @@
         return number_format($gb, 1) . ' GB';
     };
 
+    $formatScope = function ($scope) use ($notAvailable): string {
+        if (! is_string($scope) || trim($scope) === '') {
+            return $notAvailable;
+        }
+
+        $scope = strtolower(trim($scope));
+        $key = 'restic-backups::backups.views.scope_values.' . $scope;
+        $translated = __($key);
+
+        return $translated === $key ? $scope : $translated;
+    };
+
     if ($safetyDumpPath === null && is_string($rollbackPath)) {
         $candidate = $rollbackPath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . '_backup' . DIRECTORY_SEPARATOR . 'db.sql.gz';
         if (is_file($candidate)) {
@@ -71,6 +83,18 @@
         if (is_file($candidate)) {
             $safetyDumpPath = $candidate;
         }
+    }
+
+    $showBypassPath = $record->type === 'restore'
+        && in_array((string) $record->status, ['running', 'failed'], true)
+        && is_string($bypassPath)
+        && trim($bypassPath) !== '';
+    $bypassUrl = null;
+
+    if ($showBypassPath) {
+        $bypassUrl = str_starts_with($bypassPath, 'http://') || str_starts_with($bypassPath, 'https://')
+            ? $bypassPath
+            : url($bypassPath);
     }
 @endphp
 
@@ -131,7 +155,7 @@
                 {{ __('restic-backups::backups.views.runs.labels.snapshot') }}:
                 {{ $snapshot['short_id'] ?? $meta['snapshot_id'] ?? $notAvailable }}
             </div>
-            <div class="rb-text">{{ __('restic-backups::backups.views.runs.labels.scope') }}: {{ $meta['scope'] ?? $notAvailable }}</div>
+            <div class="rb-text">{{ __('restic-backups::backups.views.runs.labels.scope') }}: {{ $formatScope($meta['scope'] ?? null) }}</div>
             <div class="rb-text">{{ __('restic-backups::backups.views.runs.labels.mode') }}: {{ $meta['mode'] ?? $notAvailable }}</div>
             <div class="rb-text">
                 {{ __('restic-backups::backups.views.runs.labels.safety_backup') }}:
@@ -165,11 +189,13 @@
                     </button>
                 </div>
             @endif
-            @if (! empty($bypassPath))
+            @if ($showBypassPath && is_string($bypassUrl))
+                <div class="rb-text rb-text--muted">
+                    {{ __('restic-backups::backups.views.runs.labels.bypass_notice') }}
+                </div>
                 <div class="rb-inline">
-                    <span>{{ __('restic-backups::backups.views.runs.labels.bypass_path') }}:</span>
-                    <span class="rb-mono">{{ $bypassPath }}</span>
-                    <button type="button" class="rb-link" x-data @click="navigator.clipboard.writeText(@js($bypassPath))">
+                    <a href="{{ $bypassUrl }}" class="rb-link rb-mono" target="_blank" rel="noopener noreferrer">{{ $bypassUrl }}</a>
+                    <button type="button" class="rb-link" x-data @click="navigator.clipboard.writeText(@js($bypassUrl))">
                         {{ __('restic-backups::backups.views.runs.labels.copy') }}
                     </button>
                 </div>

@@ -522,6 +522,11 @@ return [
             'enabled' => 'включено',
             'disabled' => 'выключено',
         ],
+        'scope_values' => [
+            'files' => 'Файлы',
+            'db' => 'БД',
+            'both' => 'БД + файлы',
+        ],
         'runs' => [
             'labels' => [
                 'status' => 'Статус',
@@ -542,6 +547,7 @@ return [
                 'rollback_path_moved_back' => 'Директория отката была возвращена в корень проекта (:path) во время rollback.',
                 'safety_dump' => 'Страховочный дамп БД',
                 'bypass_path' => 'Путь bypass',
+                'bypass_notice' => 'В случае 503 сайт доступен по адресу:',
                 'copy' => 'Копировать',
                 'db_dump' => 'Дамп БД',
                 'backup' => 'Бэкап',

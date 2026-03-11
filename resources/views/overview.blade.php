@@ -107,6 +107,18 @@
             $notAvailable,
         );
     };
+
+    $formatScope = function ($scope) use ($notAvailable): string {
+        if (! is_string($scope) || trim($scope) === '') {
+            return $notAvailable;
+        }
+
+        $scope = strtolower(trim($scope));
+        $key = 'restic-backups::backups.views.scope_values.' . $scope;
+        $translated = __($key);
+
+        return $translated === $key ? $scope : $translated;
+    };
 @endphp
 
 <div class="rb-run-details">
@@ -202,7 +214,7 @@
             <div class="rb-text">{{ __('restic-backups::backups.views.overview.labels.duration') }}: {{ $formatDuration($lastRestore) }}</div>
             <div class="rb-text rb-muted">
                 {{ __('restic-backups::backups.views.overview.labels.scope') }}:
-                {{ data_get($lastRestore?->meta, 'scope', $notAvailable) }}
+                {{ $formatScope(data_get($lastRestore?->meta, 'scope')) }}
             </div>
         </div>
 

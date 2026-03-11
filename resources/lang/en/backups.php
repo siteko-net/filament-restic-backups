@@ -522,6 +522,11 @@ return [
             'enabled' => 'enabled',
             'disabled' => 'disabled',
         ],
+        'scope_values' => [
+            'files' => 'Files',
+            'db' => 'Database',
+            'both' => 'Database + files',
+        ],
         'runs' => [
             'labels' => [
                 'status' => 'Status',
@@ -542,6 +547,7 @@ return [
                 'rollback_path_moved_back' => 'Rollback directory was moved back to project root (:path) during rollback.',
                 'safety_dump' => 'Safety DB dump',
                 'bypass_path' => 'Bypass path',
+                'bypass_notice' => 'If the site returns 503, it is available at:',
                 'copy' => 'Copy',
                 'db_dump' => 'DB Dump',
                 'backup' => 'Backup',
