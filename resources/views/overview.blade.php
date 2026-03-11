@@ -4,7 +4,6 @@
     $repo = $overview['repo'] ?? [];
     $runs = $overview['runs'] ?? [];
     $system = $overview['system'] ?? [];
-    $queue = $system['queue'] ?? [];
 
     $lastSnapshot = $repo['last_snapshot'] ?? null;
     $lastBackup = $runs['last_backup'] ?? null;
