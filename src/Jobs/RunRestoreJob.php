@@ -1435,12 +1435,32 @@ class RunRestoreJob implements ShouldQueue
     protected function makeStagingTargetDir(string $projectRoot, ?int $runId, string $mode): string
     {
         if ($mode !== 'atomic') {
-            return $this->makeRestoreDirectory($runId);
+            return $this->makeRsyncStagingTargetDir($runId);
         }
 
         $suffix = $runId ? (string) $runId : Str::random(6);
         $timestamp = Carbon::now()->format('YmdHis');
         $path = $projectRoot.'.__restored_'.$suffix.'_'.$timestamp;
+
+        $this->ensureDirectory($path, context: 'staging_target');
+
+        return $path;
+    }
+
+    protected function makeRsyncStagingTargetDir(?int $runId): string
+    {
+        $tmpRoot = trim((string) sys_get_temp_dir());
+
+        if ($tmpRoot === '') {
+            $tmpRoot = '/tmp';
+        }
+
+        $base = rtrim($tmpRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'restic-backups-staging';
+        $this->ensureDirectory($base, context: 'staging_workspace');
+
+        $suffix = $runId ? (string) $runId : Str::random(6);
+        $timestamp = Carbon::now()->format('YmdHis');
+        $path = $base.DIRECTORY_SEPARATOR.'restic-restore-'.$suffix.'-'.$timestamp;
 
         $this->ensureDirectory($path, context: 'staging_target');
 
