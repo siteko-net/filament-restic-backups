@@ -629,15 +629,30 @@ class RunRestoreJob implements ShouldQueue
         } finally {
             if ($maintenanceStarted && ! $maintenanceCompleted && is_string($projectRoot)) {
                 try {
+                    $runtimePrepare = $this->prepareRuntimeDirectories($projectRoot);
+                    $meta['steps']['cutover_runtime_prepare_finally'] = $runtimePrepare;
+
                     $upResult = $this->runArtisan(['up'], $projectRoot);
                     $upResult = $this->normalizeAlreadyUpResult($upResult);
+                    $meta['steps']['cutover_up'] = $upResult;
+
+                    if (($upResult['exit_code'] ?? 1) !== 0) {
+                        $meta['steps']['cutover_up_fallback'] = $this->disableMaintenanceFallback($projectRoot);
+                    }
 
                     if ($run instanceof BackupRun) {
-                        $meta['steps']['cutover_up'] = $upResult;
                         $run->update(['meta' => $meta]);
                     }
                 } catch (Throwable) {
-                    // Best-effort only.
+                    try {
+                        $meta['steps']['cutover_up_fallback'] = $this->disableMaintenanceFallback($projectRoot);
+
+                        if ($run instanceof BackupRun) {
+                            $run->update(['meta' => $meta]);
+                        }
+                    } catch (Throwable) {
+                        // Best-effort only.
+                    }
                 }
             }
 
@@ -852,6 +867,9 @@ class RunRestoreJob implements ShouldQueue
             '-a',
             '--delete',
             '--exclude=.env',
+            '--exclude=bootstrap/cache/',
+            '--exclude=storage/framework/',
+            '--exclude=storage/logs/',
             '--exclude=storage/framework/down',
             $source,
             $target,
@@ -2045,6 +2063,38 @@ class RunRestoreJob implements ShouldQueue
             'paths' => $paths,
             'ensured' => $ensured,
             'errors' => $errors,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function disableMaintenanceFallback(string $projectRoot): array
+    {
+        $start = microtime(true);
+        $downPath = $projectRoot.DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'down';
+
+        if (! is_file($downPath)) {
+            return [
+                'exit_code' => 0,
+                'duration_ms' => (int) round((microtime(true) - $start) * 1000),
+                'path' => $downPath,
+                'removed' => false,
+                'note' => 'Maintenance marker was not found.',
+                'command' => 'maintenance_fallback_unlink',
+            ];
+        }
+
+        $removed = @unlink($downPath);
+        $existsAfter = is_file($downPath);
+
+        return [
+            'exit_code' => $removed || ! $existsAfter ? 0 : 1,
+            'duration_ms' => (int) round((microtime(true) - $start) * 1000),
+            'path' => $downPath,
+            'removed' => $removed || ! $existsAfter,
+            'command' => 'maintenance_fallback_unlink',
+            'stderr' => $removed || ! $existsAfter ? '' : 'Failed to remove maintenance marker file.',
         ];
     }
 
