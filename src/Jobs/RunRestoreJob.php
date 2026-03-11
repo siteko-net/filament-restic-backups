@@ -865,6 +865,8 @@ class RunRestoreJob implements ShouldQueue
         $command = [
             $rsync,
             '-a',
+            '--no-owner',
+            '--no-group',
             '--delete',
             '--exclude=.env',
             '--exclude=bootstrap/cache/',
@@ -893,6 +895,8 @@ class RunRestoreJob implements ShouldQueue
         $syncCommand = [
             $rsync,
             '-a',
+            '--no-owner',
+            '--no-group',
             '--exclude=.env',
             '--exclude=storage/framework/down',
             $source,
