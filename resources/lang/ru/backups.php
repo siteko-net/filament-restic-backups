@@ -449,11 +449,12 @@ return [
                 'create_snapshot_modal_heading' => 'Создать снапшот',
                 'create_snapshot_modal_description' => 'Запустит задачу бэкапа и создаст новый снапшот.',
             ],
-            'table' => [
-                'columns' => [
-                    'started' => 'Начато',
-                    'finished' => 'Завершено',
-                    'type' => 'Тип',
+                'table' => [
+                    'columns' => [
+                        'id' => 'ID запуска',
+                        'started' => 'Начато',
+                        'finished' => 'Завершено',
+                        'type' => 'Тип',
                     'status' => 'Статус',
                     'duration' => 'Длительность',
                     'trigger' => 'Триггер',

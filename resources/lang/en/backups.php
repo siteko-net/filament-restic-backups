@@ -449,11 +449,12 @@ return [
                 'create_snapshot_modal_heading' => 'Create snapshot',
                 'create_snapshot_modal_description' => 'This will start a backup job and create a new snapshot.',
             ],
-            'table' => [
-                'columns' => [
-                    'started' => 'Started',
-                    'finished' => 'Finished',
-                    'type' => 'Type',
+                'table' => [
+                    'columns' => [
+                        'id' => 'Run ID',
+                        'started' => 'Started',
+                        'finished' => 'Finished',
+                        'type' => 'Type',
                     'status' => 'Status',
                     'duration' => 'Duration',
                     'trigger' => 'Trigger',

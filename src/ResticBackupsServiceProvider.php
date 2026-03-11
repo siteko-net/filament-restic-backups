@@ -2,7 +2,9 @@
 
 namespace Siteko\FilamentResticBackups;
 
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\ServiceProvider;
+use Siteko\FilamentResticBackups\Support\BackupsScheduleRegistrar;
 
 class ResticBackupsServiceProvider extends ServiceProvider
 {
@@ -18,6 +20,7 @@ class ResticBackupsServiceProvider extends ServiceProvider
         $this->registerViews();
         $this->registerCommands();
         $this->registerRoutes();
+        $this->registerScheduler();
     }
 
     protected function registerPublishing(): void
@@ -68,5 +71,17 @@ class ResticBackupsServiceProvider extends ServiceProvider
     protected function registerRoutes(): void
     {
         $this->loadRoutesFrom(__DIR__ . '/../routes/web.php');
+    }
+
+    protected function registerScheduler(): void
+    {
+        $this->app->booted(function (): void {
+            if (! $this->app->runningInConsole()) {
+                return;
+            }
+
+            $schedule = $this->app->make(Schedule::class);
+            $this->app->make(BackupsScheduleRegistrar::class)->register($schedule);
+        });
     }
 }

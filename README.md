@@ -105,15 +105,11 @@ php artisan queue:work --tries=1
 
 ### 2) Laravel Scheduler
 
-Плагин не добавляет cron автоматически. Добавьте команды в `routes/console.php`:
+Плагин регистрирует задачи scheduler автоматически:
 
-```php
-use Illuminate\Support\Facades\Schedule;
-
-Schedule::command('restic-backups:run --trigger=schedule')->dailyAt('02:00');
-Schedule::command('restic-backups:cleanup-exports --hours=24')->daily();
-Schedule::command('restic-backups:cleanup-rollbacks --hours=24')->daily();
-```
+- `restic-backups:run --trigger=schedule` — по значениям `schedule.enabled`, `schedule.daily_time`, `schedule.timezone` из `backup_settings`.
+- `restic-backups:cleanup-exports --hours=24` — ежедневно (в `schedule.daily_time` и `schedule.timezone`).
+- `restic-backups:cleanup-rollbacks --hours=24` — ежедневно (в `schedule.daily_time` и `schedule.timezone`).
 
 И системный cron:
 

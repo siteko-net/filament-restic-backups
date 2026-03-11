@@ -126,11 +126,6 @@
                         {{ __('restic-backups::backups.views.overview.labels.last') }}: {{ $formatDateTime($lastSnapshot['time'] ?? null) }}
                         ({{ $lastSnapshot['short_id'] ?? $notAvailable }})
                     </div>
-                @if (! empty($lastSnapshot['tags']))
-                    <div class="rb-text">
-                        {{ __('restic-backups::backups.views.overview.labels.tags') }}: {{ implode(', ', $lastSnapshot['tags']) }}
-                    </div>
-                @endif
             @endif
         </div>
 

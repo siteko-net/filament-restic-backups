@@ -57,6 +57,9 @@ class BackupsRuns extends BaseBackupsPage implements HasTable
             ->query(fn(): Builder => BackupRun::query())
             ->defaultSort('started_at', 'desc')
             ->columns([
+                TextColumn::make('id')
+                    ->label(__('restic-backups::backups.pages.runs.table.columns.id'))
+                    ->sortable(),
                 TextColumn::make('started_at')
                     ->label(__('restic-backups::backups.pages.runs.table.columns.started'))
                     ->dateTime(timezone: fn(): string => $this->displayTimezone())
