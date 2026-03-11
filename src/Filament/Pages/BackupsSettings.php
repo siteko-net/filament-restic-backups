@@ -273,6 +273,10 @@ class BackupsSettings extends BaseBackupsPage
                                     TextInput::make('confirm')
                                         ->label(__('restic-backups::backups.pages.settings.sections.repository_status.init.confirm_label'))
                                         ->required(),
+                                    Toggle::make('recompute_repository_path')
+                                        ->label(__('restic-backups::backups.pages.settings.sections.repository_status.init.recompute_path_label'))
+                                        ->helperText(__('restic-backups::backups.pages.settings.sections.repository_status.init.recompute_path_helper'))
+                                        ->default(true),
                                 ])
                                 ->visible(fn(): bool => ($this->repositoryStatus['status'] ?? null) === 'not_initialized')
                                 ->disabled(fn(): bool => ! $this->hasRepositoryConfig($this->record))
@@ -600,6 +604,7 @@ class BackupsSettings extends BaseBackupsPage
         }
 
         $settings = $this->record ??= BackupSetting::singleton();
+        $recomputePath = (bool) ($data['recompute_repository_path'] ?? true);
 
         if (! $this->hasRepositoryConfig($settings)) {
             Notification::make()
@@ -609,6 +614,12 @@ class BackupsSettings extends BaseBackupsPage
                 ->send();
 
             return;
+        }
+
+        if ($recomputePath) {
+            $settings = $this->syncRepositoryPathWithCurrentConfig($settings);
+            $this->record = $settings;
+            $this->fillForm();
         }
 
         try {
@@ -642,6 +653,36 @@ class BackupsSettings extends BaseBackupsPage
                 ->danger()
                 ->send();
         }
+    }
+
+    protected function syncRepositoryPathWithCurrentConfig(BackupSetting $settings): BackupSetting
+    {
+        $prefix = BackupSetting::computeRepositoryPrefix();
+        $updates = [
+            'repository_prefix' => $prefix,
+            'prefix' => $prefix,
+        ];
+
+        $endpoint = $this->normalizeEndpoint($this->normalizeScalar($settings->endpoint));
+        $bucket = $this->normalizeScalar($settings->bucket);
+
+        if ($endpoint !== null) {
+            $updates['endpoint'] = $endpoint;
+        }
+
+        if ($endpoint !== null && $bucket !== null) {
+            $updates['restic_repository'] = $this->buildRepositoryUri($endpoint, $bucket, $prefix);
+        }
+
+        $settings->fill($updates);
+
+        if (! $settings->isDirty()) {
+            return $settings;
+        }
+
+        $settings->save();
+
+        return $settings->fresh() ?? $settings;
     }
 
     protected function loadRepositoryStatus(bool $force = false): void

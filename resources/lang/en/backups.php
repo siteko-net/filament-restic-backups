@@ -46,6 +46,8 @@ return [
                         'modal_heading' => 'Init repository',
                         'modal_description' => 'This will initialize a new restic repository at the computed path.',
                         'confirm_label' => 'Type INIT to confirm',
+                        'recompute_path_label' => 'Recompute path from APP_NAME/APP_ENV',
+                        'recompute_path_helper' => 'Before initialization, updates the restic/<app>/<env> path from current config values.',
                     ],
                 ],
                 'storage' => [

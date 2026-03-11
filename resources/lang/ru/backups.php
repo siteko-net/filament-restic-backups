@@ -46,6 +46,8 @@ return [
                         'modal_heading' => 'Инициализировать репозиторий',
                         'modal_description' => 'Это инициализирует новый репозиторий restic по вычисленному пути.',
                         'confirm_label' => 'Введите INIT для подтверждения',
+                        'recompute_path_label' => 'Пересчитать путь из APP_NAME/APP_ENV',
+                        'recompute_path_helper' => 'Перед инициализацией обновит путь вида restic/<app>/<env> по текущим значениям конфигурации.',
                     ],
                 ],
                 'storage' => [
