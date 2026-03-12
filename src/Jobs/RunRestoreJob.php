@@ -2195,6 +2195,14 @@ class RunRestoreJob implements ShouldQueue
 
             $fullPath = $path.DIRECTORY_SEPARATOR.$item;
 
+            if (is_link($fullPath)) {
+                if (@unlink($fullPath) === false && file_exists($fullPath)) {
+                    $errors[] = "Failed to remove symlink: {$fullPath}";
+                }
+
+                continue;
+            }
+
             if (is_dir($fullPath)) {
                 $this->cleanupDirectory($fullPath);
 
@@ -2323,6 +2331,12 @@ class RunRestoreJob implements ShouldQueue
             return;
         }
 
+        if (is_link($path)) {
+            @unlink($path);
+
+            return;
+        }
+
         if (! is_dir($path)) {
             return;
         }
@@ -2339,6 +2353,12 @@ class RunRestoreJob implements ShouldQueue
             }
 
             $full = $path.DIRECTORY_SEPARATOR.$item;
+
+            if (is_link($full)) {
+                @unlink($full);
+
+                continue;
+            }
 
             if (is_dir($full)) {
                 $this->cleanupDirectory($full);
