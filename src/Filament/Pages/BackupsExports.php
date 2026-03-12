@@ -61,6 +61,11 @@ class BackupsExports extends BaseBackupsPage
 
     protected ?string $displayTimezone = null;
 
+    /**
+     * @var array{full: array<string, mixed>|null, delta: array<string, mixed>|null} | null
+     */
+    protected ?array $readyArchivePair = null;
+
     public static function getNavigationSort(): ?int
     {
         return static::baseNavigationSort() + 4;
@@ -86,6 +91,8 @@ class BackupsExports extends BaseBackupsPage
 
     public function content(Schema $schema): Schema
     {
+        $this->readyArchivePair = $this->resolveReadyArchivePair();
+
         return $schema
             ->components([
                 ActionsComponent::make([
@@ -575,7 +582,12 @@ class BackupsExports extends BaseBackupsPage
     protected function renderReadyArchiveLine(string $type): HtmlString
     {
         $kindLabel = $this->readyArchiveKindLabel($type);
-        $archive = $this->latestReadyArchive($type);
+        $pair = is_array($this->readyArchivePair) ? $this->readyArchivePair : $this->resolveReadyArchivePair();
+        $archive = match ($type) {
+            'export_full' => $pair['full'] ?? null,
+            'export_delta' => $pair['delta'] ?? null,
+            default => null,
+        };
 
         if (! is_array($archive)) {
             return new HtmlString(e(__('restic-backups::backups.pages.exports.sections.downloads.line_not_ready', [
@@ -606,9 +618,34 @@ class BackupsExports extends BaseBackupsPage
     }
 
     /**
+     * @return array{full: array<string, mixed>|null, delta: array<string, mixed>|null}
+     */
+    protected function resolveReadyArchivePair(): array
+    {
+        $full = $this->latestReadyArchiveByType('export_full');
+
+        if (! is_array($full)) {
+            return [
+                'full' => null,
+                'delta' => null,
+            ];
+        }
+
+        $fullSnapshotId = $this->normalizeScalar($full['snapshot_id'] ?? null);
+        $delta = $fullSnapshotId !== null
+            ? $this->latestReadyCompatibleDeltaArchive($fullSnapshotId)
+            : null;
+
+        return [
+            'full' => $full,
+            'delta' => $delta,
+        ];
+    }
+
+    /**
      * @return array<string, mixed> | null
      */
-    protected function latestReadyArchive(string $type): ?array
+    protected function latestReadyArchiveByType(string $type): ?array
     {
         if (! in_array($type, ['export_full', 'export_delta'], true)) {
             return null;
@@ -622,39 +659,103 @@ class BackupsExports extends BaseBackupsPage
             ->get();
 
         foreach ($runs as $run) {
-            $meta = is_array($run->meta) ? $run->meta : [];
-            $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+            $archive = $this->buildReadyArchiveFromRun($run);
 
-            $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
-            $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
-
-            if ($archivePath === null || $archiveName === null || ! is_file($archivePath)) {
-                continue;
+            if (is_array($archive)) {
+                return $archive;
             }
-
-            if ($this->normalizeScalar($export['deleted_at'] ?? null) !== null) {
-                continue;
-            }
-
-            $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
-            if ($expiresAt instanceof CarbonInterface && now()->greaterThan($expiresAt)) {
-                continue;
-            }
-
-            $downloadUrl = URL::temporarySignedRoute(
-                'restic-backups.exports.download',
-                $this->resolveArchiveLinkExpiry($expiresAt),
-                ['run' => $run->getKey()],
-                absolute: false,
-            );
-
-            return [
-                'run_id' => $run->getKey(),
-                'download_url' => $downloadUrl,
-            ];
         }
 
         return null;
+    }
+
+    /**
+     * @return array<string, mixed> | null
+     */
+    protected function latestReadyCompatibleDeltaArchive(string $fullSnapshotId): ?array
+    {
+        $runs = BackupRun::query()
+            ->where('type', 'export_delta')
+            ->where('status', 'success')
+            ->orderByDesc('id')
+            ->limit(50)
+            ->get();
+
+        foreach ($runs as $run) {
+            $archive = $this->buildReadyArchiveFromRun($run);
+
+            if (! is_array($archive)) {
+                continue;
+            }
+
+            $baselineSnapshotId = $this->normalizeScalar($archive['baseline_snapshot_id'] ?? null);
+
+            if ($this->snapshotIdsMatch($baselineSnapshotId, $fullSnapshotId)) {
+                return $archive;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed> | null
+     */
+    protected function buildReadyArchiveFromRun(BackupRun $run): ?array
+    {
+        $meta = is_array($run->meta) ? $run->meta : [];
+        $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
+
+        $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
+        $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
+
+        if ($archivePath === null || $archiveName === null || ! is_file($archivePath)) {
+            return null;
+        }
+
+        if ($this->normalizeScalar($export['deleted_at'] ?? null) !== null) {
+            return null;
+        }
+
+        $expiresAt = $this->parseArchiveExpiresAt($export['expires_at'] ?? null);
+        if ($expiresAt instanceof CarbonInterface && now()->greaterThan($expiresAt)) {
+            return null;
+        }
+
+        $downloadUrl = URL::temporarySignedRoute(
+            'restic-backups.exports.download',
+            $this->resolveArchiveLinkExpiry($expiresAt),
+            ['run' => $run->getKey()],
+            absolute: false,
+        );
+
+        $snapshotId = $this->normalizeScalar($meta['snapshot_id'] ?? null)
+            ?? $this->normalizeScalar($export['to_snapshot_id'] ?? null);
+        $baselineSnapshotId = $this->normalizeScalar($meta['baseline_snapshot_id'] ?? null)
+            ?? $this->normalizeScalar($export['baseline_snapshot_id'] ?? null);
+
+        return [
+            'run_id' => $run->getKey(),
+            'download_url' => $downloadUrl,
+            'snapshot_id' => $snapshotId,
+            'baseline_snapshot_id' => $baselineSnapshotId,
+        ];
+    }
+
+    protected function snapshotIdsMatch(?string $left, ?string $right): bool
+    {
+        $left = $this->normalizeScalar($left);
+        $right = $this->normalizeScalar($right);
+
+        if ($left === null || $right === null) {
+            return false;
+        }
+
+        if ($left === $right) {
+            return true;
+        }
+
+        return str_starts_with($left, $right) || str_starts_with($right, $left);
     }
 
     protected function readyArchiveKindLabel(string $type): string
