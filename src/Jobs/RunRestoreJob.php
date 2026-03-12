@@ -923,6 +923,7 @@ class RunRestoreJob implements ShouldQueue
             '--no-owner',
             '--no-group',
             '--delete',
+            '--omit-dir-times',
         ];
 
         if ($dryRun) {
@@ -971,6 +972,7 @@ class RunRestoreJob implements ShouldQueue
             '-a',
             '--no-owner',
             '--no-group',
+            '--omit-dir-times',
             '--exclude=.env',
             '--exclude=storage/framework/down',
             $source,
