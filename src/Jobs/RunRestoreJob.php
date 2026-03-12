@@ -922,6 +922,7 @@ class RunRestoreJob implements ShouldQueue
             '-a',
             '--no-owner',
             '--no-group',
+            '--no-perms',
             '--delete',
             '--omit-dir-times',
         ];
@@ -972,6 +973,7 @@ class RunRestoreJob implements ShouldQueue
             '-a',
             '--no-owner',
             '--no-group',
+            '--no-perms',
             '--omit-dir-times',
             '--exclude=.env',
             '--exclude=storage/framework/down',
