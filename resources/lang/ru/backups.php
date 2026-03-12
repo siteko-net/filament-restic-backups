@@ -192,6 +192,7 @@ return [
                         'delta' => 'DELTA',
                     ],
                     'line_not_ready' => ':kind: н/д',
+                    'line_no_changes' => ':kind: изменений нет относительно FULL, ссылка не требуется.',
                     'download' => 'Скачать',
                     'run' => 'запуск #:run_id',
                 ],

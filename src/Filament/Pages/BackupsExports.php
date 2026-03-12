@@ -62,7 +62,11 @@ class BackupsExports extends BaseBackupsPage
     protected ?string $displayTimezone = null;
 
     /**
-     * @var array{full: array<string, mixed>|null, delta: array<string, mixed>|null} | null
+     * @var array{
+     *     full: array<string, mixed>|null,
+     *     delta: array<string, mixed>|null,
+     *     delta_notice: string|null
+     * } | null
      */
     protected ?array $readyArchivePair = null;
 
@@ -589,6 +593,16 @@ class BackupsExports extends BaseBackupsPage
             default => null,
         };
 
+        if ($type === 'export_delta' && ! is_array($archive)) {
+            $deltaNotice = $this->normalizeScalar($pair['delta_notice'] ?? null);
+
+            if ($deltaNotice === 'no_changes') {
+                return new HtmlString(e(__('restic-backups::backups.pages.exports.sections.downloads.line_no_changes', [
+                    'kind' => $kindLabel,
+                ])));
+            }
+        }
+
         if (! is_array($archive)) {
             return new HtmlString(e(__('restic-backups::backups.pages.exports.sections.downloads.line_not_ready', [
                 'kind' => $kindLabel,
@@ -618,7 +632,11 @@ class BackupsExports extends BaseBackupsPage
     }
 
     /**
-     * @return array{full: array<string, mixed>|null, delta: array<string, mixed>|null}
+     * @return array{
+     *     full: array<string, mixed>|null,
+     *     delta: array<string, mixed>|null,
+     *     delta_notice: string|null
+     * }
      */
     protected function resolveReadyArchivePair(): array
     {
@@ -628,17 +646,19 @@ class BackupsExports extends BaseBackupsPage
             return [
                 'full' => null,
                 'delta' => null,
+                'delta_notice' => null,
             ];
         }
 
         $fullSnapshotId = $this->normalizeScalar($full['snapshot_id'] ?? null);
-        $delta = $fullSnapshotId !== null
-            ? $this->latestReadyCompatibleDeltaArchive($fullSnapshotId)
-            : null;
+        $deltaState = $fullSnapshotId !== null
+            ? $this->latestReadyCompatibleDeltaArchiveState($fullSnapshotId)
+            : ['archive' => null, 'notice' => null];
 
         return [
             'full' => $full,
-            'delta' => $delta,
+            'delta' => $deltaState['archive'] ?? null,
+            'delta_notice' => $deltaState['notice'] ?? null,
         ];
     }
 
@@ -670,9 +690,9 @@ class BackupsExports extends BaseBackupsPage
     }
 
     /**
-     * @return array<string, mixed> | null
+     * @return array{archive: array<string, mixed>|null, notice: string|null}
      */
-    protected function latestReadyCompatibleDeltaArchive(string $fullSnapshotId): ?array
+    protected function latestReadyCompatibleDeltaArchiveState(string $fullSnapshotId): array
     {
         $runs = BackupRun::query()
             ->where('type', 'export_delta')
@@ -691,11 +711,26 @@ class BackupsExports extends BaseBackupsPage
             $baselineSnapshotId = $this->normalizeScalar($archive['baseline_snapshot_id'] ?? null);
 
             if ($this->snapshotIdsMatch($baselineSnapshotId, $fullSnapshotId)) {
-                return $archive;
+                $targetSnapshotId = $this->normalizeScalar($archive['snapshot_id'] ?? null);
+
+                if ($this->snapshotIdsMatch($baselineSnapshotId, $targetSnapshotId)) {
+                    return [
+                        'archive' => null,
+                        'notice' => 'no_changes',
+                    ];
+                }
+
+                return [
+                    'archive' => $archive,
+                    'notice' => null,
+                ];
             }
         }
 
-        return null;
+        return [
+            'archive' => null,
+            'notice' => null,
+        ];
     }
 
     /**

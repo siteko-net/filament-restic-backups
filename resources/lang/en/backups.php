@@ -192,6 +192,7 @@ return [
                         'delta' => 'DELTA',
                     ],
                     'line_not_ready' => ':kind: n/a',
+                    'line_no_changes' => ':kind: no changes relative to FULL, no download link needed.',
                     'download' => 'Download',
                     'run' => 'run #:run_id',
                 ],
