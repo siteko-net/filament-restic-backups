@@ -397,6 +397,22 @@ class RunRestoreJob implements ShouldQueue
                 throw new \RuntimeException('Staging validation failed.');
             }
 
+            if ($this->requiresFiles($scope) && $mode === 'rsync') {
+                $step = 'preflight_rsync_write';
+                $lockHandle->heartbeat(['step' => $step]);
+                $rsyncWritePreflight = $this->preflightRsyncWriteAccess($stagingSwapDir, $projectRoot);
+                $meta['steps']['preflight_rsync_write'] = $rsyncWritePreflight;
+                $run->update(['meta' => $meta]);
+
+                if (($rsyncWritePreflight['exit_code'] ?? 1) !== 0) {
+                    if ($this->rsyncPermissionDenied($rsyncWritePreflight)) {
+                        throw new \RuntimeException('Rsync preflight failed: insufficient write permissions in project root. Fix filesystem ownership/permissions and retry.');
+                    }
+
+                    throw new \RuntimeException('Rsync preflight failed.');
+                }
+            }
+
             if ($this->safetyBackup) {
                 $step = 'safety_backup';
                 $lockHandle->heartbeat(['step' => $step]);
@@ -869,6 +885,34 @@ class RunRestoreJob implements ShouldQueue
 
     protected function restoreFilesRsync(string $sourcePath, string $projectRoot): array
     {
+        return $this->runProcess(
+            $this->buildRsyncRestoreCommand($sourcePath, $projectRoot),
+            $projectRoot,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function preflightRsyncWriteAccess(string $sourcePath, string $projectRoot): array
+    {
+        $result = $this->runProcess(
+            $this->buildRsyncRestoreCommand($sourcePath, $projectRoot, dryRun: true),
+            $projectRoot,
+        );
+
+        if (($result['exit_code'] ?? 1) !== 0 && $this->rsyncPermissionDenied($result)) {
+            $result['note'] = trim(($result['note'] ?? '').' Rsync write preflight detected permission errors.');
+        }
+
+        return $result;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function buildRsyncRestoreCommand(string $sourcePath, string $projectRoot, bool $dryRun = false): array
+    {
         $rsync = $this->findBinary('rsync');
         $source = rtrim($sourcePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
         $target = rtrim($projectRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
@@ -879,6 +923,13 @@ class RunRestoreJob implements ShouldQueue
             '--no-owner',
             '--no-group',
             '--delete',
+        ];
+
+        if ($dryRun) {
+            $command[] = '--dry-run';
+        }
+
+        $command = array_merge($command, [
             '--exclude=.env',
             '--exclude=bootstrap/cache/',
             '--exclude=storage/framework/',
@@ -886,9 +937,21 @@ class RunRestoreJob implements ShouldQueue
             '--exclude=storage/framework/down',
             $source,
             $target,
-        ];
+        ]);
 
-        return $this->runProcess($command, $projectRoot);
+        return $command;
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    protected function rsyncPermissionDenied(array $result): bool
+    {
+        $message = strtolower((string) ($result['stdout'] ?? '').' '.(string) ($result['stderr'] ?? ''));
+
+        return str_contains($message, 'permission denied')
+            || str_contains($message, 'operation not permitted')
+            || str_contains($message, 'failed: permission denied');
     }
 
     protected function restoreFilesAtomic(string $sourcePath, string $projectRoot, int $runId): array

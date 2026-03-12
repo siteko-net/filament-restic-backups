@@ -367,6 +367,7 @@ return [
                 'preflight' => 'Проверка',
                 'preflight_fs' => 'Проверка файловой системы',
                 'preflight_space' => 'Проверка места на диске',
+                'preflight_rsync_write' => 'Проверка прав записи для rsync',
                 'dump_db_from_snapshot' => 'Дамп БД из снапшота',
                 'safety_backup' => 'Страховочный бэкап',
                 'cutover_down' => 'Режим обслуживания',

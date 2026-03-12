@@ -367,6 +367,7 @@ return [
                 'preflight' => 'Preflight',
                 'preflight_fs' => 'Filesystem preflight',
                 'preflight_space' => 'Disk space check',
+                'preflight_rsync_write' => 'Rsync write preflight',
                 'dump_db_from_snapshot' => 'Dump DB from snapshot',
                 'safety_backup' => 'Safety backup',
                 'cutover_down' => 'Maintenance mode',
