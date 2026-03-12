@@ -658,6 +658,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             ->get();
 
         $baselineFullRun = null;
+        $baselineFullCanOverrideSnapshot = false;
         if ($baselineSnapshotId !== null) {
             $candidate = BackupRun::query()
                 ->where('type', 'export_full')
@@ -667,6 +668,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
             if ($candidate instanceof BackupRun) {
                 $baselineFullRun = $candidate;
+                $baselineFullState = $this->buildArchiveState($candidate);
+                $baselineFullCanOverrideSnapshot = ($baselineFullState['status'] ?? null) !== 'deleted';
             }
         }
 
@@ -686,17 +689,19 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         foreach ($items as $index => $item) {
             $snapshotId = $this->normalizeScalar($item['id'] ?? null);
             $run = null;
+            $snapshotRun = $snapshotId !== null ? ($latestBySnapshot[$snapshotId] ?? null) : null;
 
             if (
                 $snapshotId !== null
                 && $baselineFullRun instanceof BackupRun
                 && $this->snapshotIdsMatch($snapshotId, $baselineSnapshotId)
+                && ($baselineFullCanOverrideSnapshot || ! $snapshotRun instanceof BackupRun)
             ) {
                 $run = $baselineFullRun;
             }
 
             if (! $run instanceof BackupRun && $snapshotId !== null) {
-                $run = $latestBySnapshot[$snapshotId] ?? null;
+                $run = $snapshotRun;
             }
 
             $items[$index]['archive'] = $this->buildArchiveState($run);
