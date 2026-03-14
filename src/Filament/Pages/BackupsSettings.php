@@ -18,7 +18,6 @@ use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
-use Filament\Forms\Components\TimePicker;
 use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Text as SchemaText;
 use Filament\Schemas\Components\Utilities\Set;
@@ -29,6 +28,7 @@ use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Services\S3BucketsService;
 use Siteko\FilamentResticBackups\Support\OperationLock;
+use Siteko\FilamentResticBackups\Support\BackupsScheduleTime;
 use Throwable;
 
 class BackupsSettings extends BaseBackupsPage
@@ -139,6 +139,7 @@ class BackupsSettings extends BaseBackupsPage
         $data['retention'] = is_array($data['retention'] ?? null) ? $data['retention'] : [];
         $data['schedule'] = is_array($data['schedule'] ?? null) ? $data['schedule'] : [];
         $data['paths'] = is_array($data['paths'] ?? null) ? $data['paths'] : [];
+        $data['schedule']['daily_time'] = BackupsScheduleTime::normalize($data['schedule']['daily_time'] ?? null);
 
         $data['paths']['include'] = is_array($data['paths']['include'] ?? null) ? $data['paths']['include'] : [];
         $data['paths']['exclude'] = is_array($data['paths']['exclude'] ?? null) ? $data['paths']['exclude'] : [];
@@ -182,6 +183,10 @@ class BackupsSettings extends BaseBackupsPage
         if (isset($data['paths']) && is_array($data['paths'])) {
             $data['paths']['include'] = $this->normalizePathList($data['paths']['include'] ?? []);
             $data['paths']['exclude'] = $this->normalizePathList($data['paths']['exclude'] ?? []);
+        }
+
+        if (isset($data['schedule']) && is_array($data['schedule'])) {
+            $data['schedule']['daily_time'] = BackupsScheduleTime::normalize($data['schedule']['daily_time'] ?? null);
         }
 
         return $data;
@@ -395,11 +400,11 @@ class BackupsSettings extends BaseBackupsPage
                         Toggle::make('schedule.enabled')
                             ->label(__('restic-backups::backups.pages.settings.sections.schedule.enabled'))
                             ->default(false),
-                        TimePicker::make('schedule.daily_time')
+                        TextInput::make('schedule.daily_time')
                             ->label(__('restic-backups::backups.pages.settings.sections.schedule.daily_time'))
-                            ->seconds(false)
-                            ->native(false)
-                            ->minutesStep(5),
+                            ->type('time')
+                            ->step(300)
+                            ->rule('date_format:H:i'),
                         TextInput::make('schedule.timezone')
                             ->label(__('restic-backups::backups.pages.settings.sections.schedule.timezone'))
                             ->placeholder(config('app.timezone')),

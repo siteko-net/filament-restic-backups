@@ -84,16 +84,6 @@ class BackupsScheduleRegistrar
 
     protected function normalizeDailyTime(mixed $value): string
     {
-        if (! is_string($value)) {
-            return self::DEFAULT_DAILY_TIME;
-        }
-
-        $value = trim($value);
-
-        if (preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $value) === 1) {
-            return $value;
-        }
-
-        return self::DEFAULT_DAILY_TIME;
+        return BackupsScheduleTime::normalize($value) ?? self::DEFAULT_DAILY_TIME;
     }
 }
