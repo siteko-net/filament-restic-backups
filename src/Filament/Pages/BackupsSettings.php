@@ -809,7 +809,7 @@ class BackupsSettings extends BaseBackupsPage
         try {
             $runner = new ResticRunner($settings);
             $result = $runner->snapshots([
-                'timeout' => 30,
+                'timeout' => 10,
                 'capture_output' => true,
                 'max_output_bytes' => 2048,
             ]);

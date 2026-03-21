@@ -35,7 +35,18 @@ class ResticRunner
         $this->appendMultiOption($command, '--host', $filters['host'] ?? $filters['hosts'] ?? null);
         $this->appendMultiOption($command, '--path', $filters['path'] ?? $filters['paths'] ?? null);
 
-        return $this->run($command, expectsJson: true);
+        $options = $filters;
+
+        unset(
+            $options['tag'],
+            $options['tags'],
+            $options['host'],
+            $options['hosts'],
+            $options['path'],
+            $options['paths'],
+        );
+
+        return $this->run($command, options: $options, expectsJson: true);
     }
 
     /**
