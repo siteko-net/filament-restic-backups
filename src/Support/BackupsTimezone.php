@@ -6,6 +6,7 @@ namespace Siteko\FilamentResticBackups\Support;
 
 use DateTimeInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Throwable;
 
@@ -18,7 +19,13 @@ class BackupsTimezone
         $timezone = null;
 
         if (! $settings instanceof BackupSetting) {
-            $settings = BackupSetting::query()->latest('id')->first();
+            try {
+                if (Schema::hasTable('backup_settings')) {
+                    $settings = BackupSetting::query()->latest('id')->first();
+                }
+            } catch (Throwable) {
+                $settings = null;
+            }
         }
 
         if ($settings instanceof BackupSetting) {

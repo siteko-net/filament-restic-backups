@@ -23,6 +23,7 @@ use Filament\Schemas\Components\Text as SchemaText;
 use Filament\Schemas\Components\Utilities\Set;
 use Livewire\Attributes\Locked;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Hash;
 use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
@@ -511,6 +512,24 @@ class BackupsSettings extends BaseBackupsPage
                         ->body(__('restic-backups::backups.pages.settings.notifications.backup_queued_body'))
                         ->send();
                 }),
+            Action::make('resetSettings')
+                ->label(__('restic-backups::backups.pages.settings.actions.reset_settings.label'))
+                ->icon('heroicon-o-arrow-uturn-left')
+                ->color('danger')
+                ->modalHeading(__('restic-backups::backups.pages.settings.actions.reset_settings.modal_heading'))
+                ->modalDescription(__('restic-backups::backups.pages.settings.actions.reset_settings.modal_description'))
+                ->form([
+                    TextInput::make('confirm')
+                        ->label(__('restic-backups::backups.pages.settings.actions.reset_settings.confirm_label'))
+                        ->required(),
+                    TextInput::make('current_password')
+                        ->label(__('restic-backups::backups.pages.settings.actions.reset_settings.password_label'))
+                        ->password()
+                        ->required(),
+                ])
+                ->action(function (array $data): void {
+                    $this->resetSettings($data);
+                }),
         ];
     }
 
@@ -591,6 +610,75 @@ class BackupsSettings extends BaseBackupsPage
 
     public function refreshRepositoryStatus(): void
     {
+        $this->loadRepositoryStatus(force: true);
+    }
+
+    public function resetSettings(array $data): void
+    {
+        $confirmation = strtolower(trim((string) ($data['confirm'] ?? '')));
+
+        if ($confirmation !== 'reset') {
+            Notification::make()
+                ->title(__('restic-backups::backups.pages.settings.notifications.reset_confirmation_mismatch'))
+                ->body(__('restic-backups::backups.pages.settings.notifications.reset_confirmation_mismatch_body'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        $user = auth()->user();
+        $hashedPassword = is_object($user) && method_exists($user, 'getAuthPassword')
+            ? $user->getAuthPassword()
+            : null;
+
+        if (! is_string($hashedPassword) || $hashedPassword === '') {
+            Notification::make()
+                ->title(__('restic-backups::backups.pages.settings.notifications.reset_password_unavailable'))
+                ->body(__('restic-backups::backups.pages.settings.notifications.reset_password_unavailable_body'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        if (! Hash::check((string) ($data['current_password'] ?? ''), $hashedPassword)) {
+            Notification::make()
+                ->title(__('restic-backups::backups.pages.settings.notifications.reset_password_invalid'))
+                ->body(__('restic-backups::backups.pages.settings.notifications.reset_password_invalid_body'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        $record = $this->record ??= BackupSetting::singleton();
+        $repositoryPrefix = BackupSetting::computeRepositoryPrefix();
+
+        $record->forceFill(array_merge(
+            BackupSetting::defaultAttributes(),
+            [
+                'endpoint' => null,
+                'bucket' => null,
+                'prefix' => $repositoryPrefix,
+                'repository_prefix' => $repositoryPrefix,
+                'access_key' => null,
+                'secret_key' => null,
+                'restic_repository' => null,
+                'restic_password' => null,
+            ],
+        ))->save();
+
+        $this->bucketOptions = [];
+        $this->bucketManual = true;
+        $this->bucketLoadError = null;
+
+        Notification::make()
+            ->title(__('restic-backups::backups.pages.settings.notifications.settings_reset'))
+            ->success()
+            ->send();
+
+        $this->fillForm();
         $this->loadRepositoryStatus(force: true);
     }
 

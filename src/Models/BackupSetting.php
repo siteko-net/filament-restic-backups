@@ -4,11 +4,9 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Models;
 
-use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Crypt;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Siteko\FilamentResticBackups\Casts\SafeEncryptedString;
 
 class BackupSetting extends Model
 {
@@ -32,9 +30,9 @@ class BackupSetting extends Model
     ];
 
     protected $casts = [
-        'access_key' => 'encrypted',
-        'secret_key' => 'encrypted',
-        'restic_password' => 'encrypted',
+        'access_key' => SafeEncryptedString::class,
+        'secret_key' => SafeEncryptedString::class,
+        'restic_password' => SafeEncryptedString::class,
         'retention' => 'array',
         'schedule' => 'array',
         'paths' => 'array',
@@ -58,21 +56,6 @@ class BackupSetting extends Model
         }
 
         return static::query()->create(static::defaultAttributes());
-    }
-
-    public function getAccessKeyAttribute(mixed $value): ?string
-    {
-        return $this->decryptSecretAttribute('access_key', $value);
-    }
-
-    public function getSecretKeyAttribute(mixed $value): ?string
-    {
-        return $this->decryptSecretAttribute('secret_key', $value);
-    }
-
-    public function getResticPasswordAttribute(mixed $value): ?string
-    {
-        return $this->decryptSecretAttribute('restic_password', $value);
     }
 
     public function resolveRepositoryPrefix(): string
@@ -135,58 +118,5 @@ class BackupSetting extends Model
             'baseline_snapshot_id' => null,
             'baseline_created_at' => null,
         ];
-    }
-
-    protected function decryptSecretAttribute(string $attribute, mixed $value): ?string
-    {
-        if (! is_string($value)) {
-            return null;
-        }
-
-        $value = trim($value);
-
-        if ($value === '') {
-            return null;
-        }
-
-        try {
-            $decrypted = Crypt::decryptString($value);
-
-            return trim($decrypted) === '' ? null : trim($decrypted);
-        } catch (DecryptException $exception) {
-            if (! $this->looksLikeEncryptedPayload($value)) {
-                return $value;
-            }
-
-            Log::warning('Restic backup secret could not be decrypted.', [
-                'attribute' => $attribute,
-                'backup_setting_id' => $this->getKey(),
-            ]);
-
-            return null;
-        }
-    }
-
-    protected function looksLikeEncryptedPayload(string $value): bool
-    {
-        $decoded = base64_decode($value, true);
-
-        if (! is_string($decoded) || $decoded === '') {
-            return false;
-        }
-
-        $payload = json_decode($decoded, true);
-
-        if (! is_array($payload)) {
-            return false;
-        }
-
-        foreach (['iv', 'value', 'mac'] as $key) {
-            if (! array_key_exists($key, $payload) || ! is_string($payload[$key])) {
-                return false;
-            }
-        }
-
-        return true;
     }
 }
