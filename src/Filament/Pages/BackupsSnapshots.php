@@ -41,6 +41,7 @@ use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\BackupsTimezone;
+use Siteko\FilamentResticBackups\Support\ExportDiskSpaceGuard;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
@@ -277,19 +278,47 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.export.modal_description'))
                     ->visible(fn (array $record): bool => ! $this->isArchiveReady($record))
                     ->disabled(fn (): bool => $this->snapshotError !== null)
-                    ->form([
-                        Toggle::make('include_env')
-                            ->label(__('restic-backups::backups.pages.snapshots.actions.export.include_env_label'))
-                            ->helperText(__('restic-backups::backups.pages.snapshots.actions.export.include_env_help'))
-                            ->default(false),
-                        TextInput::make('keep_hours')
-                            ->label(__('restic-backups::backups.pages.snapshots.actions.export.keep_hours_label'))
-                            ->numeric()
-                            ->minValue(1)
-                            ->maxValue(168)
-                            ->default(24)
-                            ->required(),
-                    ])
+                    ->modalSubmitActionLabel(__('restic-backups::backups.pages.snapshots.actions.export.modal_submit_label'))
+                    ->schema(function (array $record): array {
+                        $estimate = $this->computeSnapshotExportEstimate($record);
+
+                        return [
+                            Toggle::make('include_env')
+                                ->label(__('restic-backups::backups.pages.snapshots.actions.export.include_env_label'))
+                                ->helperText(__('restic-backups::backups.pages.snapshots.actions.export.include_env_help'))
+                                ->default(false),
+                            TextInput::make('keep_hours')
+                                ->label(__('restic-backups::backups.pages.snapshots.actions.export.keep_hours_label'))
+                                ->numeric()
+                                ->minValue(1)
+                                ->maxValue(168)
+                                ->default(24)
+                                ->required(),
+                            Section::make(__('restic-backups::backups.pages.snapshots.actions.export.preflight.title'))
+                                ->schema([
+                                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.actions.export.preflight.available', [
+                                        'bytes' => $this->formatBytes($estimate['free_bytes'] ?? null),
+                                    ])),
+                                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.actions.export.preflight.restore_size', [
+                                        'bytes' => $this->formatBytes($estimate['restore_size_bytes'] ?? null),
+                                    ])),
+                                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.actions.export.preflight.required', [
+                                        'bytes' => $this->formatBytes($estimate['required_bytes'] ?? null),
+                                    ])),
+                                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.actions.export.preflight.missing', [
+                                        'bytes' => $this->formatBytes($estimate['missing_bytes'] ?? null),
+                                    ])),
+                                    Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.actions.export.preflight.source', [
+                                        'source' => $this->exportEstimateSourceLabel($estimate['source'] ?? null),
+                                    ])),
+                                    Text::make(fn (): string => $this->exportEstimateStatusMessage(
+                                        $estimate,
+                                        'restic-backups::backups.pages.snapshots.actions.export.preflight',
+                                    ))
+                                        ->color(($estimate['ok'] ?? false) === true ? 'success' : 'danger'),
+                                ]),
+                        ];
+                    })
                     ->action(function (array $data, array $record): void {
                         $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
 
@@ -305,6 +334,20 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
                         $includeEnv = (bool) ($data['include_env'] ?? false);
                         $keepHours = (int) ($data['keep_hours'] ?? 24);
+                        $estimate = $this->computeSnapshotExportEstimate($record);
+
+                        if (($estimate['ok'] ?? false) !== true) {
+                            Notification::make()
+                                ->title(__('restic-backups::backups.pages.snapshots.notifications.export_disk_space_insufficient'))
+                                ->body($this->formatExportEstimateNotificationBody(
+                                    $estimate,
+                                    'restic-backups::backups.pages.snapshots.notifications',
+                                ))
+                                ->danger()
+                                ->send();
+
+                            throw new Halt;
+                        }
 
                         $lockInfo = app(OperationLock::class)->getInfo();
                         if (is_array($lockInfo)) {
@@ -1580,6 +1623,79 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             'same_filesystem' => $this->sameFilesystem($projectRoot, $stagingParent),
             'staging_parent_writable' => is_writable($stagingParent),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $record
+     * @return array<string, mixed>
+     */
+    protected function computeSnapshotExportEstimate(array $record): array
+    {
+        $snapshotId = trim((string) ($record['id'] ?? $record['short_id'] ?? ''));
+
+        if ($snapshotId === '') {
+            return [
+                'ok' => false,
+                'free_bytes' => null,
+                'restore_size_bytes' => null,
+                'required_bytes' => null,
+                'missing_bytes' => null,
+                'source' => null,
+            ];
+        }
+
+        return app(ExportDiskSpaceGuard::class)->estimateSnapshot(
+            app(ResticRunner::class),
+            $snapshotId,
+            storage_path('app/_backup/exports'),
+            300,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     */
+    protected function exportEstimateStatusMessage(array $estimate, string $prefix): string
+    {
+        if (($estimate['required_bytes'] ?? null) === null) {
+            return __($prefix.'.estimate_unavailable');
+        }
+
+        return ($estimate['ok'] ?? false) === true
+            ? __($prefix.'.result_ok')
+            : __($prefix.'.result_fail');
+    }
+
+    protected function exportEstimateSourceLabel(mixed $source): string
+    {
+        $source = is_string($source) ? trim($source) : '';
+
+        if ($source === '') {
+            return __('restic-backups::backups.pages.snapshots.placeholders.not_available');
+        }
+
+        $key = 'restic-backups::backups.export_space_sources.'.$source;
+        $translated = __($key);
+
+        return $translated !== $key
+            ? $translated
+            : $source;
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     */
+    protected function formatExportEstimateNotificationBody(array $estimate, string $prefix): string
+    {
+        if (($estimate['required_bytes'] ?? null) === null) {
+            return __($prefix.'.export_disk_space_unknown_body');
+        }
+
+        return __($prefix.'.export_disk_space_insufficient_body', [
+            'available' => $this->formatBytes($estimate['free_bytes'] ?? null),
+            'required' => $this->formatBytes($estimate['required_bytes'] ?? null),
+            'missing' => $this->formatBytes($estimate['missing_bytes'] ?? 0),
+        ]);
     }
 
     protected function preflightOkForState(Get $get, ?array $base): bool

@@ -39,6 +39,12 @@ class RunBackupJob implements ShouldQueue
 
     private const REQUEUE_DELAYS = [60, 120, 300];
 
+    private const REQUIRED_EXCLUDE_PATHS = [
+        'storage/app/_restic_cache',
+        'storage/app/_backup/exports',
+        'storage/app/_backup/restore',
+    ];
+
     public int $timeout = 7200;
 
     public int $tries = 1;
@@ -91,7 +97,7 @@ class RunBackupJob implements ShouldQueue
                 $this->resolveBackupPaths($projectRoot, $pathConfig),
                 $sharedStorage,
             );
-            $excludePaths = SharedStorageSymlink::appendMappedExcludePaths($pathConfig['exclude'] ?? [], $sharedStorage);
+            $excludePaths = $this->resolveEffectiveExcludePaths($pathConfig['exclude'] ?? [], $sharedStorage);
 
             $meta = [
                 'trigger' => $this->normalizeTrigger($this->trigger),
@@ -439,6 +445,18 @@ class RunBackupJob implements ShouldQueue
         }
 
         return array_values(array_unique($normalized));
+    }
+
+    /**
+     * @param  array<int, string>  $excludePaths
+     * @param  array<string, mixed>  $sharedStorage
+     * @return array<int, string>
+     */
+    protected function resolveEffectiveExcludePaths(array $excludePaths, array $sharedStorage): array
+    {
+        $excludePaths = $this->normalizePathList(array_merge($excludePaths, self::REQUIRED_EXCLUDE_PATHS));
+
+        return SharedStorageSymlink::appendMappedExcludePaths($excludePaths, $sharedStorage);
     }
 
     protected function dumpDatabase(string $connectionName, string $dumpPath): array

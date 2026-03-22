@@ -20,6 +20,7 @@ use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\DisasterRecoveryExport;
+use Siteko\FilamentResticBackups\Support\ExportDiskSpaceGuard;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
 use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
@@ -163,6 +164,30 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
             $topFolder = "{$appSlug}-{$env}-dr-delta-{$short}-{$stamp}";
             $archiveName = "{$topFolder}.tar.gz";
             $archivePath = $baseDir.DIRECTORY_SEPARATOR.$archiveName;
+
+            $step = 'preflight_space';
+            $lockHandle->heartbeat(['step' => $step]);
+
+            $spaceGuard = app(ExportDiskSpaceGuard::class);
+            $spaceEstimate = $spaceGuard->estimateDelta(
+                $runner,
+                $baselineSnapshot['id'],
+                $targetSnapshotId,
+                $baseDir,
+                min(600, $this->timeout),
+            );
+            $meta['steps'][$step] = $spaceEstimate;
+            $meta['export']['disk_space'] = [
+                'free_bytes' => $spaceEstimate['free_bytes'] ?? null,
+                'required_bytes' => $spaceEstimate['required_bytes'] ?? null,
+                'missing_bytes' => $spaceEstimate['missing_bytes'] ?? null,
+                'source' => $spaceEstimate['source'] ?? null,
+            ];
+            $run->update(['meta' => $meta]);
+
+            if (($spaceEstimate['ok'] ?? false) !== true) {
+                throw new \RuntimeException($spaceGuard->failureMessage($spaceEstimate));
+            }
 
             $workDir = $baseDir.DIRECTORY_SEPARATOR."work-run-{$run->id}-{$stamp}";
             $restoreDir = $workDir.DIRECTORY_SEPARATOR.'restore';

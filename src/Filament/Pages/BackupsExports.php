@@ -13,8 +13,8 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
-use Illuminate\Support\HtmlString;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Jobs\ExportDisasterRecoveryDeltaJob;
@@ -23,13 +23,16 @@ use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\BackupsTimezone;
+use Siteko\FilamentResticBackups\Support\ExportDiskSpaceGuard;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Throwable;
+
 use function Filament\Support\generate_loading_indicator_html;
 
 class BackupsExports extends BaseBackupsPage
 {
     private const SNAPSHOT_CACHE_SECONDS = 10;
+
     private const OPERATION_POLL_SECONDS = 10;
 
     protected static ?string $slug = 'backups/exports';
@@ -103,7 +106,14 @@ class BackupsExports extends BaseBackupsPage
                     Action::make('downloadFull')
                         ->label(__('restic-backups::backups.pages.exports.actions.full.label'))
                         ->icon('heroicon-o-arrow-down-tray')
-                        ->disabled(fn(): bool => $this->snapshotError !== null || $this->latestSnapshotId() === null || $this->hasRunningOperations())
+                        ->modalHeading(__('restic-backups::backups.pages.exports.actions.full.modal_heading'))
+                        ->modalDescription(__('restic-backups::backups.pages.exports.actions.full.modal_description'))
+                        ->modalSubmitActionLabel(__('restic-backups::backups.pages.exports.actions.full.modal_submit_label'))
+                        ->schema(fn (): array => $this->buildDiskSpaceSchema(
+                            $this->computeFullExportEstimate(),
+                            'restic-backups::backups.pages.exports.preflight',
+                        ))
+                        ->disabled(fn (): bool => $this->snapshotError !== null || $this->latestSnapshotId() === null || $this->hasRunningOperations())
                         ->action(function (): void {
                             $snapshotId = $this->latestSnapshotId();
 
@@ -113,7 +123,22 @@ class BackupsExports extends BaseBackupsPage
                                     ->danger()
                                     ->send();
 
-                                throw new Halt();
+                                throw new Halt;
+                            }
+
+                            $estimate = $this->computeFullExportEstimate();
+
+                            if (($estimate['ok'] ?? false) !== true) {
+                                Notification::make()
+                                    ->title(__('restic-backups::backups.pages.exports.notifications.export_disk_space_insufficient'))
+                                    ->body($this->formatExportEstimateNotificationBody(
+                                        $estimate,
+                                        'restic-backups::backups.pages.exports.notifications',
+                                    ))
+                                    ->danger()
+                                    ->send();
+
+                                throw new Halt;
                             }
 
                             if ($this->hasRunningOperations()) {
@@ -123,7 +148,7 @@ class BackupsExports extends BaseBackupsPage
                                     ->warning()
                                     ->send();
 
-                                throw new Halt();
+                                throw new Halt;
                             }
 
                             ExportDisasterRecoveryFullJob::dispatch(
@@ -142,7 +167,14 @@ class BackupsExports extends BaseBackupsPage
                     Action::make('downloadDelta')
                         ->label(__('restic-backups::backups.pages.exports.actions.delta.label'))
                         ->icon('heroicon-o-arrow-down-tray')
-                        ->disabled(fn(): bool => $this->snapshotError !== null || ! $this->baselineIsAvailable() || $this->hasRunningOperations())
+                        ->modalHeading(__('restic-backups::backups.pages.exports.actions.delta.modal_heading'))
+                        ->modalDescription(__('restic-backups::backups.pages.exports.actions.delta.modal_description'))
+                        ->modalSubmitActionLabel(__('restic-backups::backups.pages.exports.actions.delta.modal_submit_label'))
+                        ->schema(fn (): array => $this->buildDiskSpaceSchema(
+                            $this->computeDeltaExportEstimate(),
+                            'restic-backups::backups.pages.exports.preflight',
+                        ))
+                        ->disabled(fn (): bool => $this->snapshotError !== null || ! $this->baselineIsAvailable() || $this->hasRunningOperations())
                         ->action(function (): void {
                             if (! $this->baselineIsAvailable()) {
                                 Notification::make()
@@ -150,7 +182,22 @@ class BackupsExports extends BaseBackupsPage
                                     ->danger()
                                     ->send();
 
-                                throw new Halt();
+                                throw new Halt;
+                            }
+
+                            $estimate = $this->computeDeltaExportEstimate();
+
+                            if (($estimate['ok'] ?? false) !== true) {
+                                Notification::make()
+                                    ->title(__('restic-backups::backups.pages.exports.notifications.export_disk_space_insufficient'))
+                                    ->body($this->formatExportEstimateNotificationBody(
+                                        $estimate,
+                                        'restic-backups::backups.pages.exports.notifications',
+                                    ))
+                                    ->danger()
+                                    ->send();
+
+                                throw new Halt;
                             }
 
                             if ($this->hasRunningOperations()) {
@@ -160,7 +207,7 @@ class BackupsExports extends BaseBackupsPage
                                     ->warning()
                                     ->send();
 
-                                throw new Halt();
+                                throw new Halt;
                             }
 
                             ExportDisasterRecoveryDeltaJob::dispatch(
@@ -176,16 +223,16 @@ class BackupsExports extends BaseBackupsPage
                                 ->send();
                         }),
                 ])
-                    ->poll(self::OPERATION_POLL_SECONDS . 's'),
+                    ->poll(self::OPERATION_POLL_SECONDS.'s'),
                 Section::make(__('restic-backups::backups.pages.exports.sections.downloads.title'))
                     ->description(__('restic-backups::backups.pages.exports.sections.downloads.description'))
                     ->columns(1)
                     ->schema([
-                        Text::make(fn(): HtmlString => $this->renderReadyArchiveLine('export_full')),
-                        Text::make(fn(): HtmlString => $this->renderReadyArchiveLine('export_delta')),
+                        Text::make(fn (): HtmlString => $this->renderReadyArchiveLine('export_full')),
+                        Text::make(fn (): HtmlString => $this->renderReadyArchiveLine('export_delta')),
                     ])
-                    ->poll(self::OPERATION_POLL_SECONDS . 's'),
-                Section::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.title', [
+                    ->poll(self::OPERATION_POLL_SECONDS.'s'),
+                Section::make(fn (): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.title', [
                     'type' => $this->resolveOperationTypeLabel(
                         $this->operationType(),
                         __('restic-backups::backups.pages.exports.placeholders.not_available'),
@@ -193,19 +240,19 @@ class BackupsExports extends BaseBackupsPage
                 ]))
                     ->description(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.description'))
                     ->schema([
-                        Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.started_at', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.started_at', [
                             'started_at' => $this->formatLockTimestamp(
                                 $this->operationStartedAt(),
                                 __('restic-backups::backups.pages.exports.placeholders.not_available'),
                             ),
                         ])),
-                        Text::make(fn(): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.step', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.sections.operation_in_progress.step', [
                             'step' => $this->resolveOperationStepLabel(
                                 $this->operationStep(),
                                 __('restic-backups::backups.pages.exports.placeholders.not_available'),
                             ),
                         ])),
-                        Text::make(fn(): HtmlString => $this->formatActivityLine(
+                        Text::make(fn (): HtmlString => $this->formatActivityLine(
                             $this->formatRelativeTime(
                                 $this->operationLastActivityAt(),
                                 __('restic-backups::backups.pages.exports.placeholders.not_available'),
@@ -214,21 +261,21 @@ class BackupsExports extends BaseBackupsPage
                         )),
                         Text::make(__('restic-backups::backups.pages.snapshots.sections.operation_in_progress.stale_warning'))
                             ->color('danger')
-                            ->visible(fn(): bool => $this->operationIsStale()),
+                            ->visible(fn (): bool => $this->operationIsStale()),
                     ])
-                    ->visible(fn(): bool => $this->isOperationRunning())
-                    ->poll(self::OPERATION_POLL_SECONDS . 's'),
+                    ->visible(fn (): bool => $this->isOperationRunning())
+                    ->poll(self::OPERATION_POLL_SECONDS.'s'),
                 Section::make(__('restic-backups::backups.pages.exports.sections.baseline.title'))
                     ->description(__('restic-backups::backups.pages.exports.sections.baseline.description'))
                     ->columns(1)
                     ->schema([
-                        Text::make(fn(): string => __('restic-backups::backups.pages.exports.sections.baseline.snapshot', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.exports.sections.baseline.snapshot', [
                             'id' => $this->baselineSnapshotId ?? __('restic-backups::backups.pages.exports.placeholders.not_set'),
                         ])),
-                        Text::make(fn(): string => __('restic-backups::backups.pages.exports.sections.baseline.created_at', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.exports.sections.baseline.created_at', [
                             'time' => $this->formatTimestamp($this->baselineCreatedAt, __('restic-backups::backups.pages.exports.placeholders.not_set')),
                         ])),
-                        Text::make(fn(): string => __('restic-backups::backups.pages.exports.sections.baseline.status', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.exports.sections.baseline.status', [
                             'status' => $this->baselineSnapshotId === null
                                 ? __('restic-backups::backups.pages.exports.placeholders.not_set')
                                 : ($this->baselineIsAvailable()
@@ -240,13 +287,13 @@ class BackupsExports extends BaseBackupsPage
                     ->description(__('restic-backups::backups.pages.exports.sections.latest.description'))
                     ->columns(1)
                     ->schema([
-                        Text::make(fn(): string => __('restic-backups::backups.pages.exports.sections.latest.snapshot', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.exports.sections.latest.snapshot', [
                             'id' => $this->latestSnapshotId() ?? __('restic-backups::backups.pages.exports.placeholders.not_available'),
                         ])),
-                        Text::make(fn(): string => __('restic-backups::backups.pages.exports.sections.latest.time', [
+                        Text::make(fn (): string => __('restic-backups::backups.pages.exports.sections.latest.time', [
                             'time' => $this->formatTimestamp($this->latestSnapshotTime(), __('restic-backups::backups.pages.exports.placeholders.not_available')),
                         ])),
-                        Text::make(fn(): string => $this->latestSnapshotWarning() ?? __('restic-backups::backups.pages.exports.sections.latest.ok')),
+                        Text::make(fn (): string => $this->latestSnapshotWarning() ?? __('restic-backups::backups.pages.exports.sections.latest.ok')),
                     ]),
             ]);
     }
@@ -294,11 +341,13 @@ class BackupsExports extends BaseBackupsPage
             $this->snapshotRecords = [];
             $this->snapshotError = __('restic-backups::backups.pages.exports.errors.restic_not_configured');
             $this->snapshotErrorDetails = $exception->getMessage();
+
             return;
         } catch (Throwable $exception) {
             $this->snapshotRecords = [];
             $this->snapshotError = __('restic-backups::backups.pages.exports.errors.unable_to_load');
             $this->snapshotErrorDetails = $exception->getMessage();
+
             return;
         }
 
@@ -307,6 +356,7 @@ class BackupsExports extends BaseBackupsPage
             $this->snapshotExitCode = $result->exitCode;
             $this->snapshotError = __('restic-backups::backups.pages.exports.errors.unable_to_load_from_restic');
             $this->snapshotErrorDetails = $result->stderr;
+
             return;
         }
 
@@ -431,6 +481,165 @@ class BackupsExports extends BaseBackupsPage
         }
 
         return null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function computeFullExportEstimate(): array
+    {
+        $snapshotId = $this->latestSnapshotId();
+
+        if ($snapshotId === null) {
+            return $this->emptyExportEstimate();
+        }
+
+        return app(ExportDiskSpaceGuard::class)->estimateSnapshot(
+            app(ResticRunner::class),
+            $snapshotId,
+            storage_path('app/_backup/exports'),
+            300,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function computeDeltaExportEstimate(): array
+    {
+        $baselineSnapshotId = $this->normalizeScalar($this->baselineSnapshot['id'] ?? null)
+            ?? $this->baselineSnapshotId;
+        $targetSnapshotId = $this->latestSnapshotId();
+
+        if ($baselineSnapshotId === null || $targetSnapshotId === null) {
+            return $this->emptyExportEstimate();
+        }
+
+        return app(ExportDiskSpaceGuard::class)->estimateDelta(
+            app(ResticRunner::class),
+            $baselineSnapshotId,
+            $targetSnapshotId,
+            storage_path('app/_backup/exports'),
+            300,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function emptyExportEstimate(): array
+    {
+        return [
+            'ok' => false,
+            'free_bytes' => null,
+            'restore_size_bytes' => null,
+            'required_bytes' => null,
+            'missing_bytes' => null,
+            'source' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     * @return array<int, Section|Text>
+     */
+    protected function buildDiskSpaceSchema(array $estimate, string $prefix): array
+    {
+        return [
+            Section::make(__($prefix.'.title'))
+                ->schema([
+                    Text::make(fn (): string => __($prefix.'.available', [
+                        'bytes' => $this->formatBytes($estimate['free_bytes'] ?? null),
+                    ])),
+                    Text::make(fn (): string => __($prefix.'.restore_size', [
+                        'bytes' => $this->formatBytes($estimate['restore_size_bytes'] ?? null),
+                    ])),
+                    Text::make(fn (): string => __($prefix.'.required', [
+                        'bytes' => $this->formatBytes($estimate['required_bytes'] ?? null),
+                    ])),
+                    Text::make(fn (): string => __($prefix.'.missing', [
+                        'bytes' => $this->formatBytes($estimate['missing_bytes'] ?? null),
+                    ])),
+                    Text::make(fn (): string => __($prefix.'.source', [
+                        'source' => $this->exportEstimateSourceLabel($estimate['source'] ?? null),
+                    ])),
+                    Text::make(fn (): string => $this->exportEstimateStatusMessage($estimate, $prefix))
+                        ->color(($estimate['ok'] ?? false) === true ? 'success' : 'danger'),
+                ]),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     */
+    protected function exportEstimateStatusMessage(array $estimate, string $prefix): string
+    {
+        if (($estimate['required_bytes'] ?? null) === null) {
+            return __($prefix.'.estimate_unavailable');
+        }
+
+        return ($estimate['ok'] ?? false) === true
+            ? __($prefix.'.result_ok')
+            : __($prefix.'.result_fail');
+    }
+
+    protected function exportEstimateSourceLabel(mixed $source): string
+    {
+        $source = is_string($source) ? trim($source) : '';
+
+        if ($source === '') {
+            return __('restic-backups::backups.pages.exports.placeholders.not_available');
+        }
+
+        $key = 'restic-backups::backups.export_space_sources.'.$source;
+        $translated = __($key);
+
+        return $translated !== $key
+            ? $translated
+            : $source;
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     */
+    protected function formatExportEstimateNotificationBody(array $estimate, string $prefix): string
+    {
+        if (($estimate['required_bytes'] ?? null) === null) {
+            return __($prefix.'.export_disk_space_unknown_body');
+        }
+
+        return __($prefix.'.export_disk_space_insufficient_body', [
+            'available' => $this->formatBytes($estimate['free_bytes'] ?? null),
+            'required' => $this->formatBytes($estimate['required_bytes'] ?? null),
+            'missing' => $this->formatBytes($estimate['missing_bytes'] ?? 0),
+        ]);
+    }
+
+    protected function formatBytes(int|float|null $bytes): string
+    {
+        if ($bytes === null) {
+            return __('restic-backups::backups.pages.exports.placeholders.not_available');
+        }
+
+        $bytes = (float) $bytes;
+
+        if ($bytes < 1024) {
+            return number_format($bytes, 0).' B';
+        }
+
+        $kb = $bytes / 1024;
+        if ($kb < 1024) {
+            return number_format($kb, 1).' KB';
+        }
+
+        $mb = $kb / 1024;
+        if ($mb < 1024) {
+            return number_format($mb, 1).' MB';
+        }
+
+        $gb = $mb / 1024;
+
+        return number_format($gb, 1).' GB';
     }
 
     protected function isOperationRunning(): bool
@@ -579,7 +788,7 @@ class BackupsExports extends BaseBackupsPage
         $spinner = generate_loading_indicator_html()->toHtml();
 
         return new HtmlString(
-            '<span class="rb-inline">' . $spinner . '<span>' . e($label) . '</span></span>',
+            '<span class="rb-inline">'.$spinner.'<span>'.e($label).'</span></span>',
         );
     }
 
@@ -623,11 +832,11 @@ class BackupsExports extends BaseBackupsPage
 
         return new HtmlString(
             e($kindLabel)
-            . ': '
-            . '<a class="rb-link" href="' . e($downloadUrl) . '" target="_blank" rel="noopener noreferrer">'
-            . e($downloadLabel)
-            . '</a>'
-            . ' <span class="rb-text rb-text--muted rb-text--sm">(' . e($runLabel) . ')</span>',
+            .': '
+            .'<a class="rb-link" href="'.e($downloadUrl).'" target="_blank" rel="noopener noreferrer">'
+            .e($downloadLabel)
+            .'</a>'
+            .' <span class="rb-text rb-text--muted rb-text--sm">('.e($runLabel).')</span>',
         );
     }
 
@@ -888,7 +1097,7 @@ class BackupsExports extends BaseBackupsPage
             return false;
         }
 
-        $prefix = $path . '/';
+        $prefix = $path.'/';
 
         foreach ($excludes as $exclude) {
             $pattern = $this->normalizeExcludePattern($exclude);
