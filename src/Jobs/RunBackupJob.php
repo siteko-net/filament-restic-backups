@@ -19,6 +19,7 @@ use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
+use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -31,12 +32,17 @@ class RunBackupJob implements ShouldQueue
     use SerializesModels;
 
     private const LOCK_TTL_SECONDS = 7200;
+
     private const META_OUTPUT_LIMIT = 204800;
+
     private const LOCK_BLOCK_SECONDS = 30;
+
     private const REQUEUE_DELAYS = [60, 120, 300];
 
     public int $timeout = 7200;
+
     public int $tries = 1;
+
     public array $backoff = [60];
 
     /**
@@ -48,8 +54,7 @@ class RunBackupJob implements ShouldQueue
         public ?string $connectionName = null,
         public bool $runRetention = true,
         public ?int $userId = null,
-    ) {
-    }
+    ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
@@ -81,7 +86,12 @@ class RunBackupJob implements ShouldQueue
             $connectionName = $this->connectionName ?? (string) config('database.default');
             $dumpPath = storage_path('app/_backup/db.sql.gz');
             $pathConfig = $this->resolvePathConfig($settings);
-            $backupPaths = $this->resolveBackupPaths($projectRoot, $pathConfig);
+            $sharedStorage = SharedStorageSymlink::describe($projectRoot, $pathConfig);
+            $backupPaths = SharedStorageSymlink::appendBackupPath(
+                $this->resolveBackupPaths($projectRoot, $pathConfig),
+                $sharedStorage,
+            );
+            $excludePaths = SharedStorageSymlink::appendMappedExcludePaths($pathConfig['exclude'] ?? [], $sharedStorage);
 
             $meta = [
                 'trigger' => $this->normalizeTrigger($this->trigger),
@@ -92,6 +102,18 @@ class RunBackupJob implements ShouldQueue
                 'host' => $this->hostname(),
                 'app_env' => (string) config('app.env'),
                 'paths' => $pathConfig,
+                'backup_paths' => $backupPaths,
+                'effective_exclude_paths' => $excludePaths,
+                'shared_paths' => [
+                    'storage' => array_filter([
+                        'enabled' => $sharedStorage['enabled'] ?? false,
+                        'status' => $sharedStorage['status'] ?? null,
+                        'logical_path' => $sharedStorage['logical_path'] ?? 'storage',
+                        'source' => $sharedStorage['target_path'] ?? null,
+                        'archive_path' => $sharedStorage['archive_path'] ?? null,
+                        'restore_mode' => $sharedStorage['restore_mode'] ?? null,
+                    ], static fn (mixed $value): bool => $value !== null),
+                ],
             ];
 
             if ($this->userId !== null) {
@@ -129,7 +151,7 @@ class RunBackupJob implements ShouldQueue
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
-                    'exclude' => $pathConfig['exclude'] ?? [],
+                    'exclude' => $excludePaths,
                     'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
                         $lockHandle->heartbeat(array_merge(['step' => $step], $context));
                     },
@@ -272,7 +294,7 @@ class RunBackupJob implements ShouldQueue
         $dumpMeta['warnings'] = array_values(array_merge(
             $dumpMeta['warnings'] ?? [],
             [
-                'Mysql dump completed with permission warnings for: ' . implode(', ', $warningFlags),
+                'Mysql dump completed with permission warnings for: '.implode(', ', $warningFlags),
             ],
         ));
 
@@ -293,7 +315,7 @@ class RunBackupJob implements ShouldQueue
      */
     protected function resolvePathConfig(BackupSetting $settings): array
     {
-        $paths = is_array($settings->paths) ? $settings->paths : [];
+        $paths = SharedStorageSymlink::normalizePathConfig(is_array($settings->paths) ? $settings->paths : []);
 
         $include = $this->normalizePathList($paths['include'] ?? []);
         $exclude = $this->normalizePathList($paths['exclude'] ?? []);
@@ -301,6 +323,7 @@ class RunBackupJob implements ShouldQueue
         return [
             'include' => $include,
             'exclude' => $exclude,
+            'storage' => $paths['storage'] ?? ['shared_symlink' => false],
         ];
     }
 
@@ -335,10 +358,10 @@ class RunBackupJob implements ShouldQueue
     protected function buildTags(array $tags, string $trigger): array
     {
         $defaults = [
-            'app:' . $this->normalizeTagValue((string) config('app.name')),
-            'env:' . $this->normalizeTagValue((string) config('app.env')),
-            'host:' . $this->normalizeTagValue($this->hostname()),
-            'trigger:' . $trigger,
+            'app:'.$this->normalizeTagValue((string) config('app.name')),
+            'env:'.$this->normalizeTagValue((string) config('app.env')),
+            'host:'.$this->normalizeTagValue($this->hostname()),
+            'trigger:'.$trigger,
             'type:backup',
         ];
 
@@ -406,7 +429,7 @@ class RunBackupJob implements ShouldQueue
                 continue;
             }
 
-            $path = ltrim($path, "/\\");
+            $path = ltrim($path, '/\\');
 
             if ($path === '') {
                 continue;
@@ -582,18 +605,18 @@ class RunBackupJob implements ShouldQueue
         }
 
         if ($host !== null) {
-            $command[] = '--host=' . $host;
+            $command[] = '--host='.$host;
         }
 
         if ($port !== null) {
-            $command[] = '--port=' . $port;
+            $command[] = '--port='.$port;
         }
 
         if ($user !== null) {
-            $command[] = '--username=' . $user;
+            $command[] = '--username='.$user;
         }
 
-        $command[] = '--dbname=' . $database;
+        $command[] = '--dbname='.$database;
 
         $env = [];
         $password = $this->normalizeScalar($connection['password'] ?? null);
@@ -747,19 +770,19 @@ class RunBackupJob implements ShouldQueue
         $useSocket = $socket !== null && ($hostNormalized === null || $hostNormalized === 'localhost');
 
         if ($useSocket) {
-            $command[] = '--socket=' . $socket;
+            $command[] = '--socket='.$socket;
         } else {
             if ($hostNormalized !== null && $hostNormalized !== 'localhost') {
-                $command[] = '--host=' . $host;
+                $command[] = '--host='.$host;
             }
 
             if ($port !== null && $hostNormalized !== 'localhost') {
-                $command[] = '--port=' . $port;
+                $command[] = '--port='.$port;
             }
         }
 
         if ($user !== null) {
-            $command[] = '--user=' . $user;
+            $command[] = '--user='.$user;
         }
 
         $command[] = $database;
@@ -783,10 +806,10 @@ class RunBackupJob implements ShouldQueue
             }
 
             if ($prefix !== null && $prefix !== '' && ! str_starts_with($table, $prefix)) {
-                $table = $prefix . $table;
+                $table = $prefix.$table;
             }
 
-            $flags[] = '--ignore-table=' . $database . '.' . $table;
+            $flags[] = '--ignore-table='.$database.'.'.$table;
         }
 
         return array_values(array_unique($flags));
@@ -956,7 +979,7 @@ class RunBackupJob implements ShouldQueue
         $warnings = $this->mysqlDumpWarningsFromFlags($originalFlags, $finalFlags);
 
         if ($warnings === []) {
-            $warnings[] = 'Mysql dump completed with permission warnings for: ' . implode(', ', $warningFlags);
+            $warnings[] = 'Mysql dump completed with permission warnings for: '.implode(', ', $warningFlags);
         }
 
         $result['warnings'] = array_values(array_merge(
@@ -981,7 +1004,7 @@ class RunBackupJob implements ShouldQueue
         }
 
         return [
-            'Mysql dump retried without: ' . implode(', ', $removed),
+            'Mysql dump retried without: '.implode(', ', $removed),
         ];
     }
 
@@ -1026,7 +1049,7 @@ class RunBackupJob implements ShouldQueue
      */
     protected function findBinaryFromCandidates(array $candidates): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
 
         foreach ($candidates as $candidate) {
             $path = $finder->find($candidate);
@@ -1043,7 +1066,7 @@ class RunBackupJob implements ShouldQueue
 
     protected function findBinary(string $binary): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
         $path = $finder->find($binary);
 
         if ($path === null) {
@@ -1095,7 +1118,7 @@ class RunBackupJob implements ShouldQueue
             return $value;
         }
 
-        return substr($value, 0, $limit) . PHP_EOL . '...[truncated]';
+        return substr($value, 0, $limit).PHP_EOL.'...[truncated]';
     }
 
     /**
@@ -1112,7 +1135,7 @@ class RunBackupJob implements ShouldQueue
                 return $argument;
             }
 
-            return '"' . addcslashes($argument, '"\\') . '"';
+            return '"'.addcslashes($argument, '"\\').'"';
         }, $command);
 
         return implode(' ', $escaped);

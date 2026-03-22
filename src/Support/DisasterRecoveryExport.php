@@ -7,9 +7,13 @@ namespace Siteko\FilamentResticBackups\Support;
 class DisasterRecoveryExport
 {
     public const README_NAME = 'README.txt';
+
     public const MANIFEST_NAME = 'manifest.json';
+
     public const TOOLS_DIR = 'TOOLS';
+
     public const RESTORE_SH = 'restore.sh';
+
     public const RESTORE_PS1 = 'restore.ps1';
 
     /**
@@ -22,11 +26,11 @@ class DisasterRecoveryExport
 
         $lines = [
             'Disaster Recovery Export (FULL)',
-            'Snapshot: ' . $snapshotId,
+            'Snapshot: '.$snapshotId,
         ];
 
         if ($generatedAt !== '') {
-            $lines[] = 'Generated at: ' . $generatedAt;
+            $lines[] = 'Generated at: '.$generatedAt;
         }
 
         $lines[] = '';
@@ -43,7 +47,14 @@ class DisasterRecoveryExport
         $lines[] = '';
         $lines[] = 'Database dump (if present): storage/app/_backup/db.sql.gz';
 
-        return implode(PHP_EOL, $lines) . PHP_EOL;
+        if (self::hasSharedStorageExport($context)) {
+            $lines[] = '';
+            $lines[] = 'Shared storage (if present): _shared/storage';
+            $lines[] = 'Shared storage is not restored by TOOLS scripts.';
+            $lines[] = 'Restore _shared/storage manually into the storage symlink target.';
+        }
+
+        return implode(PHP_EOL, $lines).PHP_EOL;
     }
 
     /**
@@ -57,24 +68,46 @@ class DisasterRecoveryExport
 
         $lines = [
             'Disaster Recovery Export (DELTA)',
-            'Baseline snapshot: ' . $baselineId,
-            'Target snapshot: ' . $targetId,
+            'Baseline snapshot: '.$baselineId,
+            'Target snapshot: '.$targetId,
         ];
 
         if ($generatedAt !== '') {
-            $lines[] = 'Generated at: ' . $generatedAt;
+            $lines[] = 'Generated at: '.$generatedAt;
         }
 
         $lines[] = '';
         $lines[] = 'This archive contains changes since the baseline snapshot.';
         $lines[] = 'Apply it on top of the FULL archive using the restore scripts.';
-        $lines[] = 'Deleted paths are listed in ' . self::MANIFEST_NAME . '.';
+        $lines[] = 'Deleted paths are listed in '.self::MANIFEST_NAME.'.';
         $lines[] = '';
         $lines[] = 'Usage:';
         $lines[] = '- TOOLS/restore.sh <full_dir> <delta_dir>';
         $lines[] = '- TOOLS/restore.ps1 -FullDir <full_dir> -DeltaDir <delta_dir>';
 
-        return implode(PHP_EOL, $lines) . PHP_EOL;
+        if (self::hasSharedStorageExport($context)) {
+            $lines[] = '';
+            $lines[] = 'Shared storage delta (if present): _shared/storage';
+            $lines[] = 'Shared storage is not applied by TOOLS scripts.';
+            $lines[] = 'Apply _shared/storage manually to the storage symlink target.';
+            $lines[] = 'Shared storage deletions are listed in manifest.json under shared_paths.storage.deleted.';
+        }
+
+        return implode(PHP_EOL, $lines).PHP_EOL;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    protected static function hasSharedStorageExport(array $context): bool
+    {
+        $sharedPaths = $context['shared_paths'] ?? null;
+
+        if (! is_array($sharedPaths)) {
+            return false;
+        }
+
+        return is_array($sharedPaths['storage'] ?? null);
     }
 
     public static function buildRestoreShellScript(): string
@@ -337,14 +370,14 @@ BASH;
 
     public static function writeTools(string $baseDir): void
     {
-        $toolsDir = rtrim($baseDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . self::TOOLS_DIR;
+        $toolsDir = rtrim($baseDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.self::TOOLS_DIR;
 
         if (! is_dir($toolsDir)) {
             @mkdir($toolsDir, 0755, true);
         }
 
-        $shPath = $toolsDir . DIRECTORY_SEPARATOR . self::RESTORE_SH;
-        $ps1Path = $toolsDir . DIRECTORY_SEPARATOR . self::RESTORE_PS1;
+        $shPath = $toolsDir.DIRECTORY_SEPARATOR.self::RESTORE_SH;
+        $ps1Path = $toolsDir.DIRECTORY_SEPARATOR.self::RESTORE_PS1;
 
         @file_put_contents($shPath, self::buildRestoreShellScript());
         @file_put_contents($ps1Path, self::buildRestorePowerShellScript());
@@ -358,7 +391,7 @@ BASH;
      */
     public static function writeReadmeFull(string $baseDir, array $context): void
     {
-        $path = rtrim($baseDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . self::README_NAME;
+        $path = rtrim($baseDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.self::README_NAME;
         @file_put_contents($path, self::buildReadmeFull($context));
     }
 
@@ -367,7 +400,7 @@ BASH;
      */
     public static function writeReadmeDelta(string $baseDir, array $context): void
     {
-        $path = rtrim($baseDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . self::README_NAME;
+        $path = rtrim($baseDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.self::README_NAME;
         @file_put_contents($path, self::buildReadmeDelta($context));
     }
 }

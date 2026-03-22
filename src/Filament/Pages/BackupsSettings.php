@@ -5,6 +5,11 @@ declare(strict_types=1);
 namespace Siteko\FilamentResticBackups\Filament\Pages;
 
 use Filament\Actions\Action;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TagsInput;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Pages\Concerns\CanUseDatabaseTransactions;
 use Filament\Schemas\Components\Actions;
@@ -12,24 +17,20 @@ use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\EmbeddedSchema;
 use Filament\Schemas\Components\Form as FormComponent;
 use Filament\Schemas\Components\Section;
-use Filament\Schemas\Schema;
-use Filament\Support\Exceptions\Halt;
-use Filament\Forms\Components\TagsInput;
-use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
-use Filament\Forms\Components\Textarea;
-use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Text as SchemaText;
 use Filament\Schemas\Components\Utilities\Set;
-use Livewire\Attributes\Locked;
+use Filament\Schemas\Schema;
+use Filament\Support\Exceptions\Halt;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Livewire\Attributes\Locked;
 use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Services\S3BucketsService;
-use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\BackupsScheduleTime;
+use Siteko\FilamentResticBackups\Support\OperationLock;
+use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Throwable;
 
 class BackupsSettings extends BaseBackupsPage
@@ -37,6 +38,7 @@ class BackupsSettings extends BaseBackupsPage
     use CanUseDatabaseTransactions;
 
     private const REPO_STATUS_CACHE_KEY = 'restic-backups:settings:repo-status';
+
     private const REPO_STATUS_CACHE_TTL = 30;
 
     /**
@@ -139,11 +141,8 @@ class BackupsSettings extends BaseBackupsPage
 
         $data['retention'] = is_array($data['retention'] ?? null) ? $data['retention'] : [];
         $data['schedule'] = is_array($data['schedule'] ?? null) ? $data['schedule'] : [];
-        $data['paths'] = is_array($data['paths'] ?? null) ? $data['paths'] : [];
+        $data['paths'] = $this->normalizePathsConfig(is_array($data['paths'] ?? null) ? $data['paths'] : []);
         $data['schedule']['daily_time'] = BackupsScheduleTime::normalize($data['schedule']['daily_time'] ?? null);
-
-        $data['paths']['include'] = is_array($data['paths']['include'] ?? null) ? $data['paths']['include'] : [];
-        $data['paths']['exclude'] = is_array($data['paths']['exclude'] ?? null) ? $data['paths']['exclude'] : [];
 
         return $data;
     }
@@ -182,8 +181,7 @@ class BackupsSettings extends BaseBackupsPage
         $data['project_root'] = base_path();
 
         if (isset($data['paths']) && is_array($data['paths'])) {
-            $data['paths']['include'] = $this->normalizePathList($data['paths']['include'] ?? []);
-            $data['paths']['exclude'] = $this->normalizePathList($data['paths']['exclude'] ?? []);
+            $data['paths'] = $this->normalizePathsConfig($data['paths']);
         }
 
         if (isset($data['schedule']) && is_array($data['schedule'])) {
@@ -254,17 +252,17 @@ class BackupsSettings extends BaseBackupsPage
                 Section::make(__('restic-backups::backups.pages.settings.sections.repository_status.title'))
                     ->columns(1)
                     ->schema([
-                        SchemaText::make(fn(): string => __('restic-backups::backups.pages.settings.sections.repository_status.status', [
+                        SchemaText::make(fn (): string => __('restic-backups::backups.pages.settings.sections.repository_status.status', [
                             'status' => $this->repositoryStatusLabel(),
                         ]))
-                            ->color(fn(): string => $this->repositoryStatusColor()),
-                        SchemaText::make(fn(): string => $this->repositoryStatusMessage())
-                            ->color(fn(): string => $this->repositoryStatusColor())
-                            ->visible(fn(): bool => $this->repositoryStatusMessage() !== ''),
-                        SchemaText::make(fn(): string => __('restic-backups::backups.pages.settings.sections.repository_status.snapshots', [
+                            ->color(fn (): string => $this->repositoryStatusColor()),
+                        SchemaText::make(fn (): string => $this->repositoryStatusMessage())
+                            ->color(fn (): string => $this->repositoryStatusColor())
+                            ->visible(fn (): bool => $this->repositoryStatusMessage() !== ''),
+                        SchemaText::make(fn (): string => __('restic-backups::backups.pages.settings.sections.repository_status.snapshots', [
                             'count' => $this->repositoryStatus['snapshots_count'] ?? $notAvailable,
                         ]))
-                            ->visible(fn(): bool => ($this->repositoryStatus['status'] ?? null) === 'ok'),
+                            ->visible(fn (): bool => ($this->repositoryStatus['status'] ?? null) === 'ok'),
                         Actions::make([
                             Action::make('refreshRepositoryStatus')
                                 ->label(__('restic-backups::backups.pages.settings.sections.repository_status.refresh'))
@@ -284,9 +282,9 @@ class BackupsSettings extends BaseBackupsPage
                                         ->helperText(__('restic-backups::backups.pages.settings.sections.repository_status.init.recompute_path_helper'))
                                         ->default(true),
                                 ])
-                                ->visible(fn(): bool => ($this->repositoryStatus['status'] ?? null) === 'not_initialized')
-                                ->disabled(fn(): bool => ! $this->hasRepositoryConfig($this->record))
-                                ->action(fn(array $data) => $this->initRepository($data)),
+                                ->visible(fn (): bool => ($this->repositoryStatus['status'] ?? null) === 'not_initialized')
+                                ->disabled(fn (): bool => ! $this->hasRepositoryConfig($this->record))
+                                ->action(fn (array $data) => $this->initRepository($data)),
                         ]),
                     ]),
                 Section::make(__('restic-backups::backups.pages.settings.sections.storage.title'))
@@ -300,11 +298,11 @@ class BackupsSettings extends BaseBackupsPage
                             ->nullable(),
                         Select::make('bucket_select')
                             ->label(__('restic-backups::backups.pages.settings.sections.storage.bucket_select.label'))
-                            ->options(fn(): array => array_combine($this->bucketOptions, $this->bucketOptions))
+                            ->options(fn (): array => array_combine($this->bucketOptions, $this->bucketOptions))
                             ->searchable()
                             ->placeholder(__('restic-backups::backups.pages.settings.sections.storage.bucket_select.placeholder'))
-                            ->default(fn(): ?string => $this->data['bucket'] ?? null)
-                            ->visible(fn(): bool => $this->bucketOptions !== [])
+                            ->default(fn (): ?string => $this->data['bucket'] ?? null)
+                            ->visible(fn (): bool => $this->bucketOptions !== [])
                             ->dehydrated(false)
                             ->live()
                             ->afterStateUpdated(function (Set $set, ?string $state): void {
@@ -317,7 +315,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->rule('regex:/^\\S+$/')
                             ->placeholder(__('restic-backups::backups.pages.settings.sections.storage.bucket.placeholder'))
                             ->helperText(__('restic-backups::backups.pages.settings.sections.storage.bucket.helper'))
-                            ->visible(fn(): bool => $this->bucketManual || $this->bucketOptions === [])
+                            ->visible(fn (): bool => $this->bucketManual || $this->bucketOptions === [])
                             ->dehydratedWhenHidden()
                             ->nullable(),
                         Actions::make([
@@ -326,14 +324,14 @@ class BackupsSettings extends BaseBackupsPage
                                 ->icon('heroicon-o-arrow-path')
                                 ->action('refreshBuckets'),
                         ]),
-                        SchemaText::make(fn(): string => (string) ($this->bucketLoadError ?? ''))
+                        SchemaText::make(fn (): string => (string) ($this->bucketLoadError ?? ''))
                             ->color('danger')
-                            ->visible(fn(): bool => $this->bucketLoadError !== null),
+                            ->visible(fn (): bool => $this->bucketLoadError !== null),
                         TextInput::make('access_key')
                             ->label(__('restic-backups::backups.pages.settings.sections.storage.access_key'))
                             ->password()
                             ->placeholder('******')
-                            ->dehydrated(fn(string | null $state): bool => filled($state))
+                            ->dehydrated(fn (?string $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
@@ -341,7 +339,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->label(__('restic-backups::backups.pages.settings.sections.storage.secret_key'))
                             ->password()
                             ->placeholder('******')
-                            ->dehydrated(fn(string | null $state): bool => filled($state))
+                            ->dehydrated(fn (?string $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
@@ -361,11 +359,11 @@ class BackupsSettings extends BaseBackupsPage
                             ->dehydrated(false),
                         TextInput::make('restic_password')
                             ->label(__('restic-backups::backups.pages.settings.sections.repository.password_label'))
-                            ->required(fn(): bool => $this->normalizeScalar($this->record?->restic_password) === null)
+                            ->required(fn (): bool => $this->normalizeScalar($this->record?->restic_password) === null)
                             ->password()
                             ->placeholder('******')
                             ->helperText(__('restic-backups::backups.pages.settings.sections.repository.password_helper'))
-                            ->dehydrated(fn(string | null $state): bool => filled($state))
+                            ->dehydrated(fn (?string $state): bool => filled($state))
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
@@ -438,6 +436,21 @@ class BackupsSettings extends BaseBackupsPage
                                 'bootstrap/cache',
                                 'public/hot',
                             ]),
+                        Toggle::make('paths.storage.shared_symlink')
+                            ->label(__('restic-backups::backups.pages.settings.sections.paths.storage_symlink.label'))
+                            ->helperText(__('restic-backups::backups.pages.settings.sections.paths.storage_symlink.helper'))
+                            ->default(false)
+                            ->live(),
+                        SchemaText::make(fn (): string => $this->storageSharedSymlinkStatusText())
+                            ->color(fn (): string => $this->storageSharedSymlinkStatusColor())
+                            ->visible(fn (): bool => $this->storageSharedSymlinkEnabled() || $this->storageSharedSymlinkTarget() !== null),
+                        SchemaText::make(fn (): string => __('restic-backups::backups.pages.settings.sections.paths.storage_symlink.target', [
+                            'path' => $this->storageSharedSymlinkTarget() ?? __('restic-backups::backups.pages.settings.placeholders.not_available'),
+                        ]))
+                            ->visible(fn (): bool => $this->storageSharedSymlinkTarget() !== null),
+                        SchemaText::make(__('restic-backups::backups.pages.settings.sections.paths.storage_symlink.restore_notice'))
+                            ->color('warning')
+                            ->visible(fn (): bool => $this->storageSharedSymlinkEnabled()),
                         Actions::make([
                             Action::make('restoreExcludeDefaults')
                                 ->label(__('restic-backups::backups.pages.settings.sections.paths.recommended_defaults'))
@@ -476,7 +489,7 @@ class BackupsSettings extends BaseBackupsPage
                 ->requiresConfirmation()
                 ->modalHeading(__('restic-backups::backups.pages.settings.actions.run_backup.modal_heading'))
                 ->modalDescription(__('restic-backups::backups.pages.settings.actions.run_backup.modal_description'))
-                ->disabled(fn(): bool => $this->hasRunningOperations())
+                ->disabled(fn (): bool => $this->hasRunningOperations())
                 ->action(function (): void {
                     $lockInfo = app(OperationLock::class)->getInfo();
 
@@ -484,13 +497,13 @@ class BackupsSettings extends BaseBackupsPage
                         $message = __('restic-backups::backups.pages.settings.notifications.operation_running');
 
                         if (! empty($lockInfo['type'])) {
-                            $message .= ' ' . __('restic-backups::backups.pages.settings.notifications.operation_running_type', [
+                            $message .= ' '.__('restic-backups::backups.pages.settings.notifications.operation_running_type', [
                                 'type' => $lockInfo['type'],
                             ]);
                         }
 
                         if (! empty($lockInfo['run_id'])) {
-                            $message .= ' ' . __('restic-backups::backups.pages.settings.notifications.operation_running_run_id', [
+                            $message .= ' '.__('restic-backups::backups.pages.settings.notifications.operation_running_run_id', [
                                 'run_id' => $lockInfo['run_id'],
                             ]);
                         }
@@ -501,7 +514,7 @@ class BackupsSettings extends BaseBackupsPage
                             ->warning()
                             ->send();
 
-                        throw new Halt();
+                        throw new Halt;
                     }
 
                     RunBackupJob::dispatch([], 'manual', null, true, auth()->id());
@@ -723,7 +736,7 @@ class BackupsSettings extends BaseBackupsPage
                 'max_output_bytes' => 4096,
             ]);
 
-            if ($result->exitCode !== 0 && ! $this->resticAlreadyInitialized($result->stderr . ' ' . $result->stdout)) {
+            if ($result->exitCode !== 0 && ! $this->resticAlreadyInitialized($result->stderr.' '.$result->stdout)) {
                 Notification::make()
                     ->title(__('restic-backups::backups.pages.settings.notifications.init_failed'))
                     ->body($this->sanitizeRepositoryMessage($result->stderr ?: $result->stdout, $settings))
@@ -787,7 +800,7 @@ class BackupsSettings extends BaseBackupsPage
         $this->repositoryStatus = Cache::remember(
             self::REPO_STATUS_CACHE_KEY,
             self::REPO_STATUS_CACHE_TTL,
-            fn(): array => $this->determineRepositoryStatus(),
+            fn (): array => $this->determineRepositoryStatus(),
         );
     }
 
@@ -910,10 +923,10 @@ class BackupsSettings extends BaseBackupsPage
         $bucket = trim($bucket, '/');
         $prefix = trim($prefix, '/');
 
-        $repository = 's3:' . $endpoint . '/' . $bucket;
+        $repository = 's3:'.$endpoint.'/'.$bucket;
 
         if ($prefix !== '') {
-            $repository .= '/' . $prefix;
+            $repository .= '/'.$prefix;
         }
 
         return $repository;
@@ -928,7 +941,7 @@ class BackupsSettings extends BaseBackupsPage
         }
 
         if (! preg_match('#^https?://#i', $value)) {
-            $value = 'https://' . $value;
+            $value = 'https://'.$value;
         }
 
         return rtrim($value, '/');
@@ -953,7 +966,7 @@ class BackupsSettings extends BaseBackupsPage
                 continue;
             }
 
-            $path = ltrim($path, "/\\");
+            $path = ltrim($path, '/\\');
 
             if ($path === '') {
                 continue;
@@ -963,6 +976,19 @@ class BackupsSettings extends BaseBackupsPage
         }
 
         return array_values(array_unique($normalized));
+    }
+
+    /**
+     * @param  array<string, mixed>  $paths
+     * @return array<string, mixed>
+     */
+    protected function normalizePathsConfig(array $paths): array
+    {
+        $paths = SharedStorageSymlink::normalizePathConfig($paths);
+        $paths['include'] = $this->normalizePathList($paths['include'] ?? []);
+        $paths['exclude'] = $this->normalizePathList($paths['exclude'] ?? []);
+
+        return $paths;
     }
 
     /**
@@ -1023,10 +1049,51 @@ class BackupsSettings extends BaseBackupsPage
         }
 
         if (mb_strlen($message) > 600) {
-            $message = mb_substr($message, 0, 600) . '…';
+            $message = mb_substr($message, 0, 600).'…';
         }
 
         return $message;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function storageSharedSymlinkDetails(): array
+    {
+        $paths = is_array($this->data['paths'] ?? null) ? $this->data['paths'] : [];
+
+        return SharedStorageSymlink::describe(base_path(), $paths);
+    }
+
+    protected function storageSharedSymlinkEnabled(): bool
+    {
+        return (bool) ($this->storageSharedSymlinkDetails()['enabled'] ?? false);
+    }
+
+    protected function storageSharedSymlinkTarget(): ?string
+    {
+        return $this->normalizeScalar($this->storageSharedSymlinkDetails()['target_path'] ?? null);
+    }
+
+    protected function storageSharedSymlinkStatusText(): string
+    {
+        $details = $this->storageSharedSymlinkDetails();
+
+        return match ($details['status'] ?? null) {
+            'resolved' => __('restic-backups::backups.pages.settings.sections.paths.storage_symlink.status_resolved'),
+            'not_symlink' => __('restic-backups::backups.pages.settings.sections.paths.storage_symlink.status_not_symlink'),
+            'unresolved_target' => __('restic-backups::backups.pages.settings.sections.paths.storage_symlink.status_unresolved_target'),
+            default => __('restic-backups::backups.pages.settings.sections.paths.storage_symlink.status_missing'),
+        };
+    }
+
+    protected function storageSharedSymlinkStatusColor(): string
+    {
+        return match ($this->storageSharedSymlinkDetails()['status'] ?? null) {
+            'resolved' => 'success',
+            'not_symlink', 'unresolved_target' => 'danger',
+            default => 'warning',
+        };
     }
 
     protected function normalizeScalar(mixed $value): ?string

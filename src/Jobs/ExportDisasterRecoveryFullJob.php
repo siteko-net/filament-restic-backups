@@ -22,6 +22,7 @@ use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\DisasterRecoveryExport;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
+use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -34,12 +35,17 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
     use SerializesModels;
 
     private const LOCK_TTL_SECONDS = 14400; // 4h
+
     private const LOCK_BLOCK_SECONDS = 30;
+
     private const META_OUTPUT_LIMIT = 204800;
+
     private const REQUEUE_DELAYS = [60, 120, 300];
 
     public int $timeout = 14400;
+
     public int $tries = 1;
+
     public array $backoff = [60];
 
     public function __construct(
@@ -47,8 +53,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
         public int $keepHours = 24,
         public ?int $userId = null,
         public string $trigger = 'filament',
-    ) {
-    }
+    ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
@@ -64,6 +69,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
 
         if (! $lockHandle instanceof OperationLockHandle) {
             $this->requeueOrReturn();
+
             return;
         }
 
@@ -93,7 +99,10 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
 
         try {
             $settings = BackupSetting::singleton();
-            $excludePaths = $this->resolveExcludePaths($settings);
+            $projectRoot = $this->resolveProjectRoot($settings);
+            $pathConfig = SharedStorageSymlink::normalizePathConfig(is_array($settings->paths) ? $settings->paths : []);
+            $sharedStorage = SharedStorageSymlink::describe($projectRoot, $pathConfig);
+            $excludePaths = SharedStorageSymlink::appendMappedExcludePaths($this->resolveExcludePaths($settings), $sharedStorage);
 
             $run = BackupRun::query()->create([
                 'type' => 'export_full',
@@ -105,8 +114,6 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
 
             $this->ensureDirectory($baseDir);
 
-            $projectRoot = $this->resolveProjectRoot($settings);
-
             $appSlug = Str::slug((string) config('app.name', 'app')) ?: 'app';
             $env = (string) (config('app.env', 'production') ?: 'production');
             $short = substr($this->snapshotId, 0, 8);
@@ -114,11 +121,11 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
 
             $topFolder = "{$appSlug}-{$env}-dr-full-{$short}-{$stamp}";
             $archiveName = "{$topFolder}.tar.gz";
-            $archivePath = $baseDir . DIRECTORY_SEPARATOR . $archiveName;
+            $archivePath = $baseDir.DIRECTORY_SEPARATOR.$archiveName;
 
-            $workDir = $baseDir . DIRECTORY_SEPARATOR . "work-run-{$run->id}-{$stamp}";
-            $restoreDir = $workDir . DIRECTORY_SEPARATOR . 'restore';
-            $bundleDir = $workDir . DIRECTORY_SEPARATOR . 'bundle';
+            $workDir = $baseDir.DIRECTORY_SEPARATOR."work-run-{$run->id}-{$stamp}";
+            $restoreDir = $workDir.DIRECTORY_SEPARATOR.'restore';
+            $bundleDir = $workDir.DIRECTORY_SEPARATOR.'bundle';
 
             $this->ensureDirectory($workDir);
             $this->ensureDirectory($restoreDir);
@@ -161,7 +168,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
                 throw new \RuntimeException('Restored project path was not found in the snapshot.');
             }
 
-            $targetProjectDir = $bundleDir . DIRECTORY_SEPARATOR . $topFolder;
+            $targetProjectDir = $bundleDir.DIRECTORY_SEPARATOR.$topFolder;
 
             if (! @rename($restoredProjectPath, $targetProjectDir)) {
                 throw new \RuntimeException('Failed to move restored project directory into bundle.');
@@ -179,9 +186,37 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
             $meta['export']['generated_at'] = $generatedAt;
             $run->update(['meta' => $meta]);
 
+            $sharedStorageManifest = SharedStorageSymlink::copyRestoredTreeToBundle($restoreDir, $targetProjectDir, $sharedStorage);
+
+            if ($sharedStorageManifest !== null) {
+                $meta['export']['shared_paths'] = [
+                    'storage' => $sharedStorageManifest,
+                ];
+                $run->update(['meta' => $meta]);
+            }
+
+            $manifest = [
+                'snapshot_id' => $this->snapshotId,
+                'generated_at' => $generatedAt,
+            ];
+
+            if (isset($meta['export']['excluded_paths'])) {
+                $manifest['excluded_paths'] = $meta['export']['excluded_paths'];
+            }
+
+            if (isset($meta['export']['shared_paths'])) {
+                $manifest['shared_paths'] = $meta['export']['shared_paths'];
+            }
+
+            @file_put_contents(
+                $targetProjectDir.DIRECTORY_SEPARATOR.DisasterRecoveryExport::MANIFEST_NAME,
+                json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            );
+
             DisasterRecoveryExport::writeReadmeFull($targetProjectDir, [
                 'snapshot_id' => $this->snapshotId,
                 'generated_at' => $generatedAt,
+                'shared_paths' => $meta['export']['shared_paths'] ?? [],
             ]);
             DisasterRecoveryExport::writeTools($targetProjectDir);
 
@@ -306,12 +341,12 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
     {
         $relative = ltrim($projectRoot, DIRECTORY_SEPARATOR);
 
-        return rtrim($restoreDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relative;
+        return rtrim($restoreDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relative;
     }
 
     protected function findBinary(string $binary): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
         $path = $finder->find($binary);
 
         if ($path === null) {
@@ -427,7 +462,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
                 continue;
             }
 
-            $target = $rootDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+            $target = $rootDir.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
 
             if (! file_exists($target)) {
                 continue;
@@ -444,6 +479,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
     {
         if (is_link($path) || is_file($path)) {
             @unlink($path);
+
             return;
         }
 
@@ -460,6 +496,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
 
             if ($item->isLink() || $item->isFile()) {
                 @unlink($itemPath);
+
                 continue;
             }
 
@@ -521,7 +558,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
             return $value;
         }
 
-        return substr($value, 0, $limit) . PHP_EOL . '...[truncated]';
+        return substr($value, 0, $limit).PHP_EOL.'...[truncated]';
     }
 
     /**
@@ -538,7 +575,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
                 return $argument;
             }
 
-            return '"' . addcslashes($argument, '"\\') . '"';
+            return '"'.addcslashes($argument, '"\\').'"';
         }, $command);
 
         return implode(' ', $escaped);
@@ -699,6 +736,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
     {
         if (is_string($value)) {
             $value = trim($value);
+
             return $value === '' ? null : $value;
         }
 

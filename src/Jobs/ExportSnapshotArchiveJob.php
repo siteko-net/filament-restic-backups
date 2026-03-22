@@ -21,6 +21,7 @@ use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
+use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -33,12 +34,17 @@ class ExportSnapshotArchiveJob implements ShouldQueue
     use SerializesModels;
 
     private const LOCK_TTL_SECONDS = 14400; // 4h
+
     private const LOCK_BLOCK_SECONDS = 30;
+
     private const META_OUTPUT_LIMIT = 204800;
+
     private const REQUEUE_DELAYS = [60, 120, 300];
 
     public int $timeout = 14400;
+
     public int $tries = 1;
+
     public array $backoff = [60];
 
     public function __construct(
@@ -47,8 +53,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
         public int $keepHours = 24,
         public ?int $userId = null,
         public string $trigger = 'filament',
-    ) {
-    }
+    ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
@@ -64,6 +69,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
         if (! $lockHandle instanceof OperationLockHandle) {
             $this->requeueOrReturn();
+
             return;
         }
 
@@ -103,6 +109,8 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $this->ensureDirectory($baseDir);
 
             $projectRoot = $this->resolveProjectRoot($settings);
+            $pathConfig = SharedStorageSymlink::normalizePathConfig(is_array($settings->paths) ? $settings->paths : []);
+            $sharedStorage = SharedStorageSymlink::describe($projectRoot, $pathConfig);
 
             $appSlug = Str::slug((string) config('app.name', 'app')) ?: 'app';
             $env = (string) (config('app.env', 'production') ?: 'production');
@@ -111,11 +119,11 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
             $topFolder = "{$appSlug}-{$env}-snapshot-{$short}-{$stamp}";
             $archiveName = "{$topFolder}.tar.gz";
-            $archivePath = $baseDir . DIRECTORY_SEPARATOR . $archiveName;
+            $archivePath = $baseDir.DIRECTORY_SEPARATOR.$archiveName;
 
-            $workDir = $baseDir . DIRECTORY_SEPARATOR . "work-run-{$run->id}-{$stamp}";
-            $restoreDir = $workDir . DIRECTORY_SEPARATOR . 'restore';
-            $bundleDir = $workDir . DIRECTORY_SEPARATOR . 'bundle';
+            $workDir = $baseDir.DIRECTORY_SEPARATOR."work-run-{$run->id}-{$stamp}";
+            $restoreDir = $workDir.DIRECTORY_SEPARATOR.'restore';
+            $bundleDir = $workDir.DIRECTORY_SEPARATOR.'bundle';
 
             $this->ensureDirectory($workDir);
             $this->ensureDirectory($restoreDir);
@@ -157,7 +165,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             }
 
             // Переименовываем восстановленный проект в “красивую” корневую папку архива (без /var/www/...)
-            $targetProjectDir = $bundleDir . DIRECTORY_SEPARATOR . $topFolder;
+            $targetProjectDir = $bundleDir.DIRECTORY_SEPARATOR.$topFolder;
 
             if (! @rename($restoredProjectPath, $targetProjectDir)) {
                 throw new \RuntimeException('Failed to move restored project directory into bundle.');
@@ -165,7 +173,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
             // По умолчанию НЕ включаем .env (безопаснее для “скачать как архив”)
             if (! $this->includeEnv) {
-                $envFile = $targetProjectDir . DIRECTORY_SEPARATOR . '.env';
+                $envFile = $targetProjectDir.DIRECTORY_SEPARATOR.'.env';
                 if (is_file($envFile)) {
                     @unlink($envFile);
                 }
@@ -180,8 +188,19 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 'project_root' => $projectRoot,
                 'include_env' => $this->includeEnv,
             ];
+
+            $sharedStorageManifest = SharedStorageSymlink::copyRestoredTreeToBundle($restoreDir, $targetProjectDir, $sharedStorage);
+
+            if ($sharedStorageManifest !== null) {
+                $manifest['shared_paths'] = [
+                    'storage' => $sharedStorageManifest,
+                ];
+                $meta['export']['shared_paths'] = $manifest['shared_paths'];
+                $run->update(['meta' => $meta]);
+            }
+
             @file_put_contents(
-                $targetProjectDir . DIRECTORY_SEPARATOR . '_snapshot_export.json',
+                $targetProjectDir.DIRECTORY_SEPARATOR.'_snapshot_export.json',
                 json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             );
 
@@ -302,12 +321,12 @@ class ExportSnapshotArchiveJob implements ShouldQueue
     {
         $relative = ltrim($projectRoot, DIRECTORY_SEPARATOR);
 
-        return rtrim($restoreDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relative;
+        return rtrim($restoreDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relative;
     }
 
     protected function findBinary(string $binary): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
         $path = $finder->find($binary);
 
         if ($path === null) {
@@ -403,7 +422,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             return $value;
         }
 
-        return substr($value, 0, $limit) . PHP_EOL . '...[truncated]';
+        return substr($value, 0, $limit).PHP_EOL.'...[truncated]';
     }
 
     /**
@@ -420,7 +439,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 return $argument;
             }
 
-            return '"' . addcslashes($argument, '"\\') . '"';
+            return '"'.addcslashes($argument, '"\\').'"';
         }, $command);
 
         return implode(' ', $escaped);
@@ -581,6 +600,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
     {
         if (is_string($value)) {
             $value = trim($value);
+
             return $value === '' ? null : $value;
         }
 

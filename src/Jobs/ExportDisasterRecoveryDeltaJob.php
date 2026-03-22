@@ -22,6 +22,7 @@ use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\DisasterRecoveryExport;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
+use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -34,20 +35,24 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
     use SerializesModels;
 
     private const LOCK_TTL_SECONDS = 14400; // 4h
+
     private const LOCK_BLOCK_SECONDS = 30;
+
     private const META_OUTPUT_LIMIT = 204800;
+
     private const REQUEUE_DELAYS = [60, 120, 300];
 
     public int $timeout = 14400;
+
     public int $tries = 1;
+
     public array $backoff = [60];
 
     public function __construct(
         public int $keepHours = 24,
         public ?int $userId = null,
         public string $trigger = 'filament',
-    ) {
-    }
+    ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
     {
@@ -62,6 +67,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
 
         if (! $lockHandle instanceof OperationLockHandle) {
             $this->requeueOrReturn();
+
             return;
         }
 
@@ -88,14 +94,19 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
 
         try {
             $settings = BackupSetting::singleton();
-            $excludePaths = $this->resolveExcludePaths($settings);
+            $projectRoot = $this->resolveProjectRoot($settings);
+            $pathConfig = SharedStorageSymlink::normalizePathConfig(is_array($settings->paths) ? $settings->paths : []);
+            $sharedStorage = SharedStorageSymlink::describe($projectRoot, $pathConfig);
+            $configuredExcludePaths = $this->resolveExcludePaths($settings);
+            $excludePaths = SharedStorageSymlink::appendMappedExcludePaths($configuredExcludePaths, $sharedStorage);
             $baselineSnapshotId = $this->normalizeScalar($settings->baseline_snapshot_id);
 
             if ($baselineSnapshotId === null) {
                 throw new \RuntimeException('Baseline snapshot is not configured.');
             }
 
-            $meta['export']['exclude_paths'] = $excludePaths;
+            $meta['export']['exclude_paths'] = $configuredExcludePaths;
+            $meta['export']['effective_exclude_paths'] = $excludePaths;
 
             $run = BackupRun::query()->create([
                 'type' => 'export_delta',
@@ -106,8 +117,6 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
             $lockHandle->setRunId($run->id);
 
             $this->ensureDirectory($baseDir);
-
-            $projectRoot = $this->resolveProjectRoot($settings);
 
             $appSlug = Str::slug((string) config('app.name', 'app')) ?: 'app';
             $env = (string) (config('app.env', 'production') ?: 'production');
@@ -153,11 +162,11 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
             $short = substr($targetSnapshotId, 0, 8);
             $topFolder = "{$appSlug}-{$env}-dr-delta-{$short}-{$stamp}";
             $archiveName = "{$topFolder}.tar.gz";
-            $archivePath = $baseDir . DIRECTORY_SEPARATOR . $archiveName;
+            $archivePath = $baseDir.DIRECTORY_SEPARATOR.$archiveName;
 
-            $workDir = $baseDir . DIRECTORY_SEPARATOR . "work-run-{$run->id}-{$stamp}";
-            $restoreDir = $workDir . DIRECTORY_SEPARATOR . 'restore';
-            $bundleDir = $workDir . DIRECTORY_SEPARATOR . 'bundle';
+            $workDir = $baseDir.DIRECTORY_SEPARATOR."work-run-{$run->id}-{$stamp}";
+            $restoreDir = $workDir.DIRECTORY_SEPARATOR.'restore';
+            $bundleDir = $workDir.DIRECTORY_SEPARATOR.'bundle';
 
             $this->ensureDirectory($workDir);
             $this->ensureDirectory($restoreDir);
@@ -212,16 +221,42 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
             );
             $deletedEntries = $this->mapDiffPaths($diff['deleted'], $basePaths);
 
-            if ($excludePaths !== []) {
-                $changedEntries = $this->filterEntriesByExcludes($changedEntries, $excludePaths);
-                $deletedEntries = $this->filterEntriesByExcludes($deletedEntries, $excludePaths);
+            ['project' => $projectChangedEntries, 'shared' => $sharedChangedEntries] = $this->splitSharedStorageEntries(
+                $changedEntries,
+                $sharedStorage,
+            );
+            ['project' => $projectDeletedEntries, 'shared' => $sharedDeletedEntries] = $this->splitSharedStorageEntries(
+                $deletedEntries,
+                $sharedStorage,
+            );
+
+            if ($configuredExcludePaths !== []) {
+                $projectChangedEntries = $this->filterEntriesByExcludes($projectChangedEntries, $configuredExcludePaths);
+                $projectDeletedEntries = $this->filterEntriesByExcludes($projectDeletedEntries, $configuredExcludePaths);
             }
 
-            $changedRelative = $this->uniqueRelativePaths($changedEntries);
-            $deletedRelative = $this->uniqueRelativePaths($deletedEntries);
+            if ($this->isSharedStorageFullyExcluded($configuredExcludePaths)) {
+                $sharedChangedEntries = [];
+                $sharedDeletedEntries = [];
+            } else {
+                $sharedExcludePaths = $this->resolveSharedStorageExcludePaths($configuredExcludePaths);
+
+                if ($sharedExcludePaths !== []) {
+                    $sharedChangedEntries = $this->filterEntriesByExcludes($sharedChangedEntries, $sharedExcludePaths);
+                    $sharedDeletedEntries = $this->filterEntriesByExcludes($sharedDeletedEntries, $sharedExcludePaths);
+                }
+            }
+
+            $changedEntries = array_merge($projectChangedEntries, $sharedChangedEntries);
+            $changedRelative = $this->uniqueRelativePaths($projectChangedEntries);
+            $deletedRelative = $this->uniqueRelativePaths($projectDeletedEntries);
+            $sharedChangedRelative = $this->uniqueRelativePaths($sharedChangedEntries);
+            $sharedDeletedRelative = $this->uniqueRelativePaths($sharedDeletedEntries);
 
             $meta['export']['changed_files'] = count($changedRelative);
             $meta['export']['deleted_files'] = count($deletedRelative);
+            $meta['export']['shared_changed_files'] = count($sharedChangedRelative);
+            $meta['export']['shared_deleted_files'] = count($sharedDeletedRelative);
             $run->update(['meta' => $meta]);
 
             $includePaths = $this->buildIncludePathsFromEntries($changedEntries);
@@ -273,16 +308,21 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 }
             }
 
-            $targetProjectDir = $bundleDir . DIRECTORY_SEPARATOR . $topFolder;
-            $filesDir = $targetProjectDir . DIRECTORY_SEPARATOR . 'files';
+            $targetProjectDir = $bundleDir.DIRECTORY_SEPARATOR.$topFolder;
+            $filesDir = $targetProjectDir.DIRECTORY_SEPARATOR.'files';
             $this->ensureDirectory($targetProjectDir);
             $this->ensureDirectory($filesDir);
 
             if ($changedEntries !== []) {
                 $restoredBaseMap = $this->buildRestoredBaseMap($restoreDir, $basePaths);
                 $restoredBaseMap[''] = $restoreDir;
+                $destinationRoots = [];
 
-                $missing = $this->copyDeltaEntries($changedEntries, $restoredBaseMap, $filesDir);
+                if (($sharedTargetPath = SharedStorageSymlink::targetPathForBackup($sharedStorage)) !== null) {
+                    $destinationRoots[$sharedTargetPath] = SharedStorageSymlink::bundleDirectoryPath($targetProjectDir, $sharedStorage);
+                }
+
+                $missing = $this->copyDeltaEntries($changedEntries, $restoredBaseMap, $filesDir, $destinationRoots);
 
                 if ($missing !== []) {
                     $meta['export']['missing_files'] = $missing;
@@ -302,8 +342,34 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 'deleted' => $deletedRelative,
             ];
 
+            $sharedStorageManifest = null;
+
+            if (($sharedTargetPath = SharedStorageSymlink::targetPathForBackup($sharedStorage)) !== null) {
+                $sharedStorageDir = SharedStorageSymlink::bundleDirectoryPath($targetProjectDir, $sharedStorage);
+                $hasSharedDelta = is_dir($sharedStorageDir) || $sharedDeletedRelative !== [];
+
+                if ($hasSharedDelta) {
+                    $sharedStorageManifest = SharedStorageSymlink::manifestEntry(
+                        $sharedStorage,
+                        presentInArchive: is_dir($sharedStorageDir),
+                    );
+
+                    if ($sharedStorageManifest !== null && $sharedDeletedRelative !== []) {
+                        $sharedStorageManifest['deleted'] = $sharedDeletedRelative;
+                    }
+                }
+            }
+
+            if ($sharedStorageManifest !== null) {
+                $manifest['shared_paths'] = [
+                    'storage' => $sharedStorageManifest,
+                ];
+                $meta['export']['shared_paths'] = $manifest['shared_paths'];
+                $run->update(['meta' => $meta]);
+            }
+
             @file_put_contents(
-                $targetProjectDir . DIRECTORY_SEPARATOR . DisasterRecoveryExport::MANIFEST_NAME,
+                $targetProjectDir.DIRECTORY_SEPARATOR.DisasterRecoveryExport::MANIFEST_NAME,
                 json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
             );
 
@@ -311,6 +377,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 'baseline_snapshot_id' => $baselineSnapshot['id'],
                 'to_snapshot_id' => $targetSnapshotId,
                 'generated_at' => $generatedAt,
+                'shared_paths' => $manifest['shared_paths'] ?? [],
             ]);
             DisasterRecoveryExport::writeTools($targetProjectDir);
 
@@ -429,7 +496,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
     {
         $relative = ltrim($projectRoot, DIRECTORY_SEPARATOR);
 
-        return rtrim($restoreDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relative;
+        return rtrim($restoreDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relative;
     }
 
     /**
@@ -704,7 +771,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 continue;
             }
 
-            $path = $base === '' ? $relative : $base . '/' . $relative;
+            $path = $base === '' ? $relative : $base.'/'.$relative;
             $paths[$path] = true;
         }
 
@@ -729,7 +796,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
 
             $relative = ltrim($basePath, '/');
             $relative = str_replace('/', DIRECTORY_SEPARATOR, $relative);
-            $candidate = $restoreDir . DIRECTORY_SEPARATOR . $relative;
+            $candidate = $restoreDir.DIRECTORY_SEPARATOR.$relative;
 
             if (is_dir($candidate)) {
                 $map[$basePath] = $candidate;
@@ -742,10 +809,15 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
     /**
      * @param  array<int, array{relative: string, base: string}>  $entries
      * @param  array<string, string>  $restoredBaseMap
+     * @param  array<string, string>  $destinationRoots
      * @return array<int, string>
      */
-    protected function copyDeltaEntries(array $entries, array $restoredBaseMap, string $filesDir): array
-    {
+    protected function copyDeltaEntries(
+        array $entries,
+        array $restoredBaseMap,
+        string $filesDir,
+        array $destinationRoots = [],
+    ): array {
         $missing = [];
         $filesDir = rtrim($filesDir, DIRECTORY_SEPARATOR);
 
@@ -758,18 +830,21 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
             }
 
             $sourceBase = $restoredBaseMap[$base] ?? $restoredBaseMap[''] ?? null;
+            $destinationBase = $destinationRoots[$base] ?? $filesDir;
 
             if ($sourceBase === null) {
                 $missing[] = $relative;
+
                 continue;
             }
 
             $relativeFs = str_replace('/', DIRECTORY_SEPARATOR, $relative);
-            $source = rtrim($sourceBase, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relativeFs;
-            $destination = $filesDir . DIRECTORY_SEPARATOR . $relativeFs;
+            $source = rtrim($sourceBase, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relativeFs;
+            $destination = rtrim($destinationBase, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$relativeFs;
 
             if (is_dir($source)) {
                 $this->ensureDirectory($destination);
+
                 continue;
             }
 
@@ -777,16 +852,19 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 $target = readlink($source);
                 if ($target === false) {
                     $missing[] = $relative;
+
                     continue;
                 }
 
                 $this->ensureDirectory(dirname($destination));
                 @symlink($target, $destination);
+
                 continue;
             }
 
             if (! is_file($source)) {
                 $missing[] = $relative;
+
                 continue;
             }
 
@@ -798,6 +876,34 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
         }
 
         return $missing;
+    }
+
+    /**
+     * @param  array<int, array{relative: string, base: string}>  $entries
+     * @param  array<string, mixed>  $sharedStorage
+     * @return array{project: array<int, array{relative: string, base: string}>, shared: array<int, array{relative: string, base: string}>}
+     */
+    protected function splitSharedStorageEntries(array $entries, array $sharedStorage): array
+    {
+        $projectEntries = [];
+        $sharedEntries = [];
+
+        foreach ($entries as $entry) {
+            $base = is_string($entry['base'] ?? null) ? $entry['base'] : '';
+
+            if (SharedStorageSymlink::matchesBase($base, $sharedStorage)) {
+                $sharedEntries[] = $entry;
+
+                continue;
+            }
+
+            $projectEntries[] = $entry;
+        }
+
+        return [
+            'project' => $projectEntries,
+            'shared' => $sharedEntries,
+        ];
     }
 
     /**
@@ -823,7 +929,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 return null;
             }
 
-            $prefix = $basePath . '/';
+            $prefix = $basePath.'/';
 
             if (str_starts_with($path, $prefix)) {
                 $relative = substr($path, strlen($prefix));
@@ -893,7 +999,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 continue;
             }
 
-            if ($relative === $exclude || str_starts_with($relative, $exclude . '/')) {
+            if ($relative === $exclude || str_starts_with($relative, $exclude.'/')) {
                 return true;
             }
         }
@@ -929,6 +1035,51 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
         }
 
         return implode('/', $parts);
+    }
+
+    /**
+     * @param  array<int, string>  $excludePaths
+     * @return array<int, string>
+     */
+    protected function resolveSharedStorageExcludePaths(array $excludePaths): array
+    {
+        $normalized = [];
+
+        foreach ($excludePaths as $excludePath) {
+            $excludePath = $this->normalizePath((string) $excludePath);
+            $excludePath = ltrim($excludePath, '/');
+
+            if (! str_starts_with($excludePath, 'storage/')) {
+                continue;
+            }
+
+            $relative = substr($excludePath, strlen('storage/'));
+
+            if ($relative === '') {
+                continue;
+            }
+
+            $normalized[$relative] = true;
+        }
+
+        return array_values(array_keys($normalized));
+    }
+
+    /**
+     * @param  array<int, string>  $excludePaths
+     */
+    protected function isSharedStorageFullyExcluded(array $excludePaths): bool
+    {
+        foreach ($excludePaths as $excludePath) {
+            $excludePath = $this->normalizePath((string) $excludePath);
+            $excludePath = ltrim($excludePath, '/');
+
+            if ($excludePath === 'storage') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -989,7 +1140,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
 
     protected function findBinary(string $binary): string
     {
-        $finder = new ExecutableFinder();
+        $finder = new ExecutableFinder;
         $path = $finder->find($binary);
 
         if ($path === null) {
@@ -1085,7 +1236,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
             return $value;
         }
 
-        return substr($value, 0, $limit) . PHP_EOL . '...[truncated]';
+        return substr($value, 0, $limit).PHP_EOL.'...[truncated]';
     }
 
     /**
@@ -1102,7 +1253,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
                 return $argument;
             }
 
-            return '"' . addcslashes($argument, '"\\') . '"';
+            return '"'.addcslashes($argument, '"\\').'"';
         }, $command);
 
         return implode(' ', $escaped);
@@ -1266,6 +1417,7 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
     {
         if (is_string($value)) {
             $value = trim($value);
+
             return $value === '' ? null : $value;
         }
 

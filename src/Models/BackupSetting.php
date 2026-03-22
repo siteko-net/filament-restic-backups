@@ -78,13 +78,13 @@ class BackupSetting extends Model
         }
 
         if ($appSlug === '') {
-            $appSlug = 'project-' . substr(sha1(base_path()), 0, 8);
+            $appSlug = 'project-'.substr(sha1(base_path()), 0, 8);
         }
 
         $env = trim((string) config('app.env', 'production'));
         $env = $env === '' ? 'production' : $env;
 
-        return 'restic/' . $appSlug . '/' . $env;
+        return 'restic/'.$appSlug.'/'.$env;
     }
 
     /**
@@ -111,6 +111,9 @@ class BackupSetting extends Model
                     'storage/logs',
                     'bootstrap/cache',
                     'public/hot',
+                ],
+                'storage' => [
+                    'shared_symlink' => false,
                 ],
             ],
             'project_root' => config('restic-backups.paths.project_root', base_path()),
