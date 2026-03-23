@@ -15,7 +15,7 @@ class ExportDiskSpaceGuard
 
     private const QUEUED_PREFLIGHT_TTL_SECONDS = 300;
 
-    private const SNAPSHOT_ARCHIVE_RATIO = 0.35;
+    private const SNAPSHOT_ARCHIVE_RATIO = 1.0;
 
     private const SNAPSHOT_RESERVE_RATIO = 0.15;
 
@@ -23,7 +23,7 @@ class ExportDiskSpaceGuard
 
     private const SNAPSHOT_MIN_RESERVE_BYTES = 1073741824; // 1 GB
 
-    private const DELTA_ARCHIVE_RATIO = 0.35;
+    private const DELTA_ARCHIVE_RATIO = 1.0;
 
     private const DELTA_RESERVE_RATIO = 0.15;
 
