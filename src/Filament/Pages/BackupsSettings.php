@@ -30,6 +30,7 @@ use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Services\S3BucketsService;
 use Siteko\FilamentResticBackups\Support\BackupsScheduleTime;
 use Siteko\FilamentResticBackups\Support\OperationLock;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Throwable;
 
@@ -127,7 +128,7 @@ class BackupsSettings extends BaseBackupsPage
     {
         unset($data['access_key'], $data['secret_key'], $data['restic_password']);
 
-        $data['project_root'] = base_path();
+        $data['project_root'] = ProjectRootResolver::configuredOrCurrent($data['project_root'] ?? null);
 
         $repositoryPrefix = $this->resolveRepositoryPrefix($data);
         $data['repository_prefix'] = $repositoryPrefix;
@@ -181,7 +182,7 @@ class BackupsSettings extends BaseBackupsPage
             $data['restic_repository'] = $this->buildRepositoryUri($endpoint, $bucket, $repositoryPrefix);
         }
 
-        $data['project_root'] = base_path();
+        $data['project_root'] = ProjectRootResolver::configuredOrCurrent($data['project_root'] ?? null);
 
         if (isset($data['paths']) && is_array($data['paths'])) {
             $data['paths'] = $this->normalizePathsConfig($data['paths']);
@@ -1068,7 +1069,10 @@ class BackupsSettings extends BaseBackupsPage
     {
         $paths = is_array($this->data['paths'] ?? null) ? $this->data['paths'] : [];
 
-        return SharedStorageSymlink::describe(base_path(), $paths);
+        return SharedStorageSymlink::describe(
+            ProjectRootResolver::configuredOrCurrent($this->data['project_root'] ?? null),
+            $paths,
+        );
     }
 
     protected function storageSharedSymlinkEnabled(): bool

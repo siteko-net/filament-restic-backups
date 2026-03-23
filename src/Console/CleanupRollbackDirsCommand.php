@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Carbon;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 use Throwable;
 
 class CleanupRollbackDirsCommand extends Command
@@ -31,7 +32,7 @@ class CleanupRollbackDirsCommand extends Command
             return self::FAILURE;
         }
 
-        $prefix = basename($projectRoot) . '.__before_restore_';
+        $prefix = basename($projectRoot).'.__before_restore_';
         $cutoff = Carbon::now()->subHours($hours);
         $removed = 0;
 
@@ -46,7 +47,7 @@ class CleanupRollbackDirsCommand extends Command
                 continue;
             }
 
-            $path = $parent . DIRECTORY_SEPARATOR . $entry;
+            $path = $parent.DIRECTORY_SEPARATOR.$entry;
 
             if (! is_dir($path)) {
                 continue;
@@ -54,6 +55,7 @@ class CleanupRollbackDirsCommand extends Command
 
             if (! $this->isSafeRollbackPath($path, $projectRoot)) {
                 $this->warn("Skip unsafe path: {$path}");
+
                 continue;
             }
 
@@ -65,6 +67,7 @@ class CleanupRollbackDirsCommand extends Command
 
                 if ($mtime === false) {
                     $this->warn("Skip: unable to read mtime for {$path}");
+
                     continue;
                 }
 
@@ -77,6 +80,7 @@ class CleanupRollbackDirsCommand extends Command
 
             if ($dryRun) {
                 $this->info("Would remove: {$path}");
+
                 continue;
             }
 
@@ -104,8 +108,7 @@ class CleanupRollbackDirsCommand extends Command
             $root = null;
         }
 
-        return $root
-            ?? (string) config('restic-backups.paths.project_root', base_path());
+        return ProjectRootResolver::configuredOrCurrent($root);
     }
 
     protected function extractTimestamp(string $entry, string $prefix): ?Carbon
@@ -131,13 +134,13 @@ class CleanupRollbackDirsCommand extends Command
             return false;
         }
 
-        $prefix = basename($projectRootReal) . '.__before_restore_';
+        $prefix = basename($projectRootReal).'.__before_restore_';
 
         if (! str_starts_with(basename($pathReal), $prefix)) {
             return false;
         }
 
-        return str_starts_with($pathReal, $parentReal . DIRECTORY_SEPARATOR);
+        return str_starts_with($pathReal, $parentReal.DIRECTORY_SEPARATOR);
     }
 
     protected function normalizeScalar(mixed $value): ?string

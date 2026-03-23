@@ -7,6 +7,7 @@ namespace Siteko\FilamentResticBackups\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Casts\SafeEncryptedString;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 
 class BackupSetting extends Model
 {
@@ -119,7 +120,7 @@ class BackupSetting extends Model
                     'shared_symlink' => false,
                 ],
             ],
-            'project_root' => config('restic-backups.paths.project_root', base_path()),
+            'project_root' => ProjectRootResolver::current(),
             'repository_prefix' => static::computeRepositoryPrefix(),
             'baseline_snapshot_id' => null,
             'baseline_created_at' => null,

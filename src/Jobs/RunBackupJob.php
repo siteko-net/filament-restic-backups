@@ -19,6 +19,7 @@ use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\OperationLock;
 use Siteko\FilamentResticBackups\Support\OperationLockHandle;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 use Siteko\FilamentResticBackups\Support\SharedStorageSymlink;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
@@ -309,11 +310,7 @@ class RunBackupJob implements ShouldQueue
 
     protected function resolveProjectRoot(BackupSetting $settings): string
     {
-        $projectRoot = $this->normalizeScalar($settings->project_root)
-            ?? $this->normalizeScalar(config('restic-backups.paths.project_root', base_path()))
-            ?? base_path();
-
-        return $projectRoot;
+        return ProjectRootResolver::configuredOrCurrent($settings->project_root);
     }
 
     /**

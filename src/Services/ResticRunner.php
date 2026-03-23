@@ -9,12 +9,14 @@ use Siteko\FilamentResticBackups\DTO\ProcessResult;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Exceptions\ResticProcessException;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 use Symfony\Component\Process\Process;
 use Throwable;
 
 class ResticRunner
 {
     private const DEFAULT_TIMEOUT_SECONDS = 3600;
+
     private const DEFAULT_MAX_OUTPUT_BYTES = 5242880;
 
     private ?BackupSetting $settings;
@@ -53,7 +55,7 @@ class ResticRunner
      * @param  array<int, string>  $tags
      * @param  array<string, mixed>  $options
      */
-    public function backup(array | string $paths, array $tags = [], array $options = []): ProcessResult
+    public function backup(array|string $paths, array $tags = [], array $options = []): ProcessResult
     {
         $command = ['backup'];
         $expectsJson = (bool) ($options['json'] ?? false);
@@ -307,9 +309,7 @@ class ResticRunner
             $this->ensureDirectory($workDir, context: 'work_dir');
         }
 
-        $projectRoot = $this->normalizeScalar($settings->project_root)
-            ?? $this->normalizeScalar(config('restic-backups.paths.project_root', base_path()))
-            ?? base_path();
+        $projectRoot = ProjectRootResolver::configuredOrCurrent($settings->project_root);
 
         $this->ensureWorkingDirectory($projectRoot);
 
@@ -337,7 +337,7 @@ class ResticRunner
             $captureOutput = true;
         }
 
-        $startedAt = new DateTimeImmutable();
+        $startedAt = new DateTimeImmutable;
         $start = microtime(true);
 
         $process = new Process(
@@ -384,14 +384,14 @@ class ResticRunner
             $exitCode = $process->getExitCode() ?? 1;
         }
 
-        $finishedAt = new DateTimeImmutable();
+        $finishedAt = new DateTimeImmutable;
         $durationMs = (int) round((microtime(true) - $start) * 1000);
 
         $stdout = $captureOutput ? $process->getOutput() : '';
         $stderr = $captureOutput ? $process->getErrorOutput() : '';
 
         if ($exceptionMessage !== null) {
-            $stderr = trim($stderr . PHP_EOL . $exceptionMessage);
+            $stderr = trim($stderr.PHP_EOL.$exceptionMessage);
         }
 
         $secrets = $this->collectSecrets($settings);
@@ -426,7 +426,6 @@ class ResticRunner
     }
 
     /**
-     * @param  callable  $heartbeat
      * @param  array<int, string>  $command
      */
     protected function callHeartbeat(callable $heartbeat, array $command): void
@@ -460,7 +459,7 @@ class ResticRunner
             return $argument;
         }
 
-        return '"' . addcslashes($argument, "\"\\") . '"';
+        return '"'.addcslashes($argument, '"\\').'"';
     }
 
     protected function settings(): BackupSetting
@@ -487,10 +486,10 @@ class ResticRunner
         $endpoint = rtrim($endpoint, '/');
         $bucket = trim($bucket, '/');
 
-        $repository = 's3:' . $endpoint . '/' . $bucket;
+        $repository = 's3:'.$endpoint.'/'.$bucket;
 
         if ($prefix !== null) {
-            $repository .= '/' . ltrim($prefix, '/');
+            $repository .= '/'.ltrim($prefix, '/');
         }
 
         return $repository;
@@ -569,7 +568,7 @@ class ResticRunner
     /**
      * @return array<int, string>
      */
-    protected function normalizeArray(array | string | null $value): array
+    protected function normalizeArray(array|string|null $value): array
     {
         if (is_string($value)) {
             $value = [$value];
@@ -598,7 +597,7 @@ class ResticRunner
         return $normalized;
     }
 
-    protected function appendMultiOption(array &$command, string $option, array | string | null $value): void
+    protected function appendMultiOption(array &$command, string $option, array|string|null $value): void
     {
         foreach ($this->normalizeArray($value) as $item) {
             $command[] = $option;
@@ -712,7 +711,7 @@ class ResticRunner
             return $output;
         }
 
-        return substr($output, 0, $maxBytes) . PHP_EOL . '...[truncated]';
+        return substr($output, 0, $maxBytes).PHP_EOL.'...[truncated]';
     }
 
     protected function appendDiagnostics(string $stderr, ?string $repository): string
@@ -742,11 +741,11 @@ class ResticRunner
         }
 
         return rtrim($stderr)
-            . PHP_EOL
-            . PHP_EOL
-            . 'Diagnostics:'
-            . PHP_EOL
-            . '- ' . implode(PHP_EOL . '- ', $diagnostics);
+            .PHP_EOL
+            .PHP_EOL
+            .'Diagnostics:'
+            .PHP_EOL
+            .'- '.implode(PHP_EOL.'- ', $diagnostics);
     }
 
     protected function proxyDiagnostic(string $stderr, ?string $repository): ?string
@@ -766,7 +765,7 @@ class ResticRunner
         $hint = 'Proxy error detected.';
 
         if ($proxyVars !== []) {
-            $hint .= ' Environment proxy variables set: ' . implode(', ', $proxyVars) . '.';
+            $hint .= ' Environment proxy variables set: '.implode(', ', $proxyVars).'.';
         }
 
         $host = $this->repositoryHost($repository);

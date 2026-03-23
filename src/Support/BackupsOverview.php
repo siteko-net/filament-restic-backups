@@ -10,14 +10,14 @@ use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
-use Siteko\FilamentResticBackups\Support\BackupsTimezone;
-use Siteko\FilamentResticBackups\Support\OperationLock;
 use Throwable;
 
 class BackupsOverview
 {
     private const CACHE_KEY = 'restic-backups:overview:repo';
+
     private const CACHE_TTL_SECONDS = 45;
+
     private const ERROR_SNIPPET_LIMIT = 600;
 
     /**
@@ -216,10 +216,7 @@ class BackupsOverview
 
     protected function resolveProjectRoot(?BackupSetting $settings): string
     {
-        $projectRoot = $this->normalizeScalar($settings?->project_root);
-
-        return $projectRoot
-            ?? (string) config('restic-backups.paths.project_root', base_path());
+        return ProjectRootResolver::configuredOrCurrent($settings?->project_root);
     }
 
     protected function hasRepositoryConfiguration(?BackupSetting $settings): bool
@@ -325,7 +322,7 @@ class BackupsOverview
         $message = preg_replace('#(://)([^/]*):([^@]*)@#', '$1***:***@', $message) ?? $message;
 
         if (mb_strlen($message) > self::ERROR_SNIPPET_LIMIT) {
-            $message = mb_substr($message, 0, self::ERROR_SNIPPET_LIMIT) . '…';
+            $message = mb_substr($message, 0, self::ERROR_SNIPPET_LIMIT).'…';
         }
 
         return $message;

@@ -13,6 +13,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Carbon;
 use Siteko\FilamentResticBackups\Models\BackupRun;
 use Siteko\FilamentResticBackups\Models\BackupSetting;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 use Throwable;
 
 class CleanupRollbackDirJob implements ShouldQueue
@@ -23,14 +24,14 @@ class CleanupRollbackDirJob implements ShouldQueue
     use SerializesModels;
 
     public int $timeout = 3600;
+
     public int $tries = 1;
 
     public function __construct(
         public string $path,
         public int $restoreRunId,
         public int $notBeforeTimestamp,
-    ) {
-    }
+    ) {}
 
     public function handle(Filesystem $filesystem): void
     {
@@ -112,8 +113,7 @@ class CleanupRollbackDirJob implements ShouldQueue
             $root = null;
         }
 
-        return $root
-            ?? (string) config('restic-backups.paths.project_root', base_path());
+        return ProjectRootResolver::configuredOrCurrent($root);
     }
 
     protected function isSafeRollbackPath(string $path, string $projectRoot): bool
@@ -126,13 +126,13 @@ class CleanupRollbackDirJob implements ShouldQueue
             return false;
         }
 
-        $prefix = basename($projectRootReal) . '.__before_restore_';
+        $prefix = basename($projectRootReal).'.__before_restore_';
 
         if (! str_starts_with(basename($pathReal), $prefix)) {
             return false;
         }
 
-        return str_starts_with($pathReal, $parentReal . DIRECTORY_SEPARATOR);
+        return str_starts_with($pathReal, $parentReal.DIRECTORY_SEPARATOR);
     }
 
     protected function updateCleanupMeta(?BackupRun $run, array $data): void

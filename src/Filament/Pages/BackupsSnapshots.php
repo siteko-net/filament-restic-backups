@@ -43,6 +43,7 @@ use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Siteko\FilamentResticBackups\Support\BackupsTimezone;
 use Siteko\FilamentResticBackups\Support\ExportDiskSpaceGuard;
 use Siteko\FilamentResticBackups\Support\OperationLock;
+use Siteko\FilamentResticBackups\Support\ProjectRootResolver;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -1810,8 +1811,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     {
         $settings = BackupSetting::singleton();
 
-        return $this->normalizeScalar($settings->project_root)
-            ?? (string) config('restic-backups.paths.project_root', base_path());
+        return ProjectRootResolver::configuredOrCurrent($settings->project_root);
     }
 
     protected function getDiskFreeBytes(string $path): ?int
