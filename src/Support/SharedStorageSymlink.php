@@ -267,7 +267,7 @@ class SharedStorageSymlink
      * }  $details
      * @return array<string, mixed>|null
      */
-    public static function copyRestoredTreeToBundle(string $restoreDir, string $bundleRoot, array $details): ?array
+    public static function moveRestoredTreeToBundle(string $restoreDir, string $bundleRoot, array $details): ?array
     {
         $sourceDir = self::restoredTargetPath($restoreDir, $details);
 
@@ -282,6 +282,12 @@ class SharedStorageSymlink
         }
 
         $destinationDir = self::bundleDirectoryPath($bundleRoot);
+        self::ensureDirectory(dirname($destinationDir));
+
+        if (! file_exists($destinationDir) && @rename($sourceDir, $destinationDir)) {
+            return $manifest;
+        }
+
         self::mirrorDirectory($sourceDir, $destinationDir, self::INTERNAL_STORAGE_RELATIVE_EXCLUDES);
 
         return $manifest;
@@ -379,7 +385,11 @@ class SharedStorageSymlink
             self::ensureDirectory(dirname($targetPath));
 
             if (! @copy($item->getPathname(), $targetPath)) {
-                throw new \RuntimeException('Unable to copy shared storage file into export bundle.');
+                throw new \RuntimeException(sprintf(
+                    'Unable to copy shared storage file into export bundle: %s -> %s',
+                    $item->getPathname(),
+                    $targetPath,
+                ));
             }
         }
     }

@@ -233,7 +233,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                 'include_env' => $this->includeEnv,
             ];
 
-            $sharedStorageManifest = SharedStorageSymlink::copyRestoredTreeToBundle($restoreDir, $targetProjectDir, $sharedStorage);
+            $sharedStorageManifest = SharedStorageSymlink::moveRestoredTreeToBundle($restoreDir, $targetProjectDir, $sharedStorage);
 
             if ($sharedStorageManifest !== null) {
                 $manifest['shared_paths'] = [

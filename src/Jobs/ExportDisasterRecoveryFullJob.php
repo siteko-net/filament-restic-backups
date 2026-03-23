@@ -227,7 +227,7 @@ class ExportDisasterRecoveryFullJob implements ShouldQueue
             $meta['export']['generated_at'] = $generatedAt;
             $run->update(['meta' => $meta]);
 
-            $sharedStorageManifest = SharedStorageSymlink::copyRestoredTreeToBundle($restoreDir, $targetProjectDir, $sharedStorage);
+            $sharedStorageManifest = SharedStorageSymlink::moveRestoredTreeToBundle($restoreDir, $targetProjectDir, $sharedStorage);
 
             if ($sharedStorageManifest !== null) {
                 $meta['export']['shared_paths'] = [
