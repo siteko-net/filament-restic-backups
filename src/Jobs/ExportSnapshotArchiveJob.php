@@ -152,6 +152,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $projectRoot = $this->resolveProjectRoot($settings);
             $pathConfig = SharedStorageSymlink::normalizePathConfig(is_array($settings->paths) ? $settings->paths : []);
             $sharedStorage = SharedStorageSymlink::describe($projectRoot, $pathConfig);
+            $excludePaths = SharedStorageSymlink::appendInternalExportExcludePaths([], $sharedStorage);
 
             $appSlug = Str::slug((string) config('app.name', 'app')) ?: 'app';
             $env = (string) (config('app.env', 'production') ?: 'production');
@@ -173,6 +174,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $meta['export']['archive_name'] = $archiveName;
             $meta['export']['archive_path'] = $archivePath;
             $meta['export']['work_dir'] = $workDir;
+            $meta['export']['exclude_paths'] = $excludePaths;
             $run->update(['meta' => $meta]);
 
             $step = 'restic_restore';
@@ -185,6 +187,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
                     'timeout' => $this->timeout,
                     'capture_output' => true,
                     'max_output_bytes' => self::META_OUTPUT_LIMIT,
+                    'exclude' => $excludePaths,
                     'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
                         $lockHandle->heartbeat(array_merge(['step' => $step], $context));
                     },

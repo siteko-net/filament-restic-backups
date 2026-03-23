@@ -11,6 +11,28 @@ class SharedStorageSymlink
     public const RESTORE_MODE = 'manual_only';
 
     /**
+     * Internal plugin/runtime directories that must never end up inside exported bundles.
+     *
+     * @var array<int, string>
+     */
+    public const INTERNAL_PROJECT_EXCLUDE_PATHS = [
+        'storage/app/_restic_cache',
+        'storage/app/_backup/exports',
+        'storage/app/_backup/restore',
+    ];
+
+    /**
+     * The same internal runtime directories, but relative to the shared storage root itself.
+     *
+     * @var array<int, string>
+     */
+    public const INTERNAL_STORAGE_RELATIVE_EXCLUDES = [
+        'app/_restic_cache',
+        'app/_backup/exports',
+        'app/_backup/restore',
+    ];
+
+    /**
      * @param  array<string, mixed>  $paths
      * @return array<string, mixed>
      */
@@ -166,6 +188,23 @@ class SharedStorageSymlink
     }
 
     /**
+     * @param  array<int, string>  $excludePaths
+     * @param  array{
+     *     enabled?: bool,
+     *     status?: string,
+     *     target_path?: string|null
+     * }  $details
+     * @return array<int, string>
+     */
+    public static function appendInternalExportExcludePaths(array $excludePaths, array $details): array
+    {
+        return self::appendMappedExcludePaths(
+            array_merge($excludePaths, self::INTERNAL_PROJECT_EXCLUDE_PATHS),
+            $details,
+        );
+    }
+
+    /**
      * @param  array{
      *     enabled?: bool,
      *     status?: string,
@@ -243,7 +282,7 @@ class SharedStorageSymlink
         }
 
         $destinationDir = self::bundleDirectoryPath($bundleRoot);
-        self::mirrorDirectory($sourceDir, $destinationDir);
+        self::mirrorDirectory($sourceDir, $destinationDir, self::INTERNAL_STORAGE_RELATIVE_EXCLUDES);
 
         return $manifest;
     }
@@ -277,12 +316,39 @@ class SharedStorageSymlink
         return rtrim($bundleRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$archivePath;
     }
 
-    protected static function mirrorDirectory(string $sourceDir, string $destinationDir): void
+    /**
+     * @param  array<int, string>  $excludeRelativePaths
+     */
+    protected static function mirrorDirectory(string $sourceDir, string $destinationDir, array $excludeRelativePaths = []): void
     {
         self::ensureDirectory($destinationDir);
 
+        $sourceDir = rtrim($sourceDir, DIRECTORY_SEPARATOR);
+        $excludeRelativePaths = array_values(array_filter(array_map(
+            static fn (string $path): ?string => self::normalizeRelativePath($path),
+            $excludeRelativePaths,
+        )));
+
+        $directoryIterator = new \RecursiveDirectoryIterator($sourceDir, \FilesystemIterator::SKIP_DOTS);
+        $filter = new \RecursiveCallbackFilterIterator(
+            $directoryIterator,
+            static function (\SplFileInfo $item) use ($sourceDir, $excludeRelativePaths): bool {
+                if ($excludeRelativePaths === []) {
+                    return true;
+                }
+
+                $pathname = $item->getPathname();
+                $prefixLength = strlen($sourceDir);
+                $relative = substr($pathname, $prefixLength);
+                $relative = ltrim(str_replace('\\', '/', (string) $relative), '/');
+                $relative = self::normalizeRelativePath($relative);
+
+                return ! self::shouldExcludeRelativePath($relative, $excludeRelativePaths);
+            },
+        );
+
         $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($sourceDir, \FilesystemIterator::SKIP_DOTS),
+            $filter,
             \RecursiveIteratorIterator::SELF_FIRST,
         );
 
@@ -316,6 +382,24 @@ class SharedStorageSymlink
                 throw new \RuntimeException('Unable to copy shared storage file into export bundle.');
             }
         }
+    }
+
+    /**
+     * @param  array<int, string>  $excludeRelativePaths
+     */
+    protected static function shouldExcludeRelativePath(?string $relativePath, array $excludeRelativePaths): bool
+    {
+        if ($relativePath === null || $relativePath === '') {
+            return false;
+        }
+
+        foreach ($excludeRelativePaths as $excludePath) {
+            if ($relativePath === $excludePath || str_starts_with($relativePath, $excludePath.'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected static function ensureDirectory(string $path): void

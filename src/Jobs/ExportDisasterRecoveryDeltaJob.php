@@ -1135,7 +1135,10 @@ class ExportDisasterRecoveryDeltaJob implements ShouldQueue
     {
         $paths = is_array($settings->paths) ? $settings->paths : [];
 
-        return $this->normalizePathList($paths['exclude'] ?? []);
+        return $this->normalizePathList(array_merge(
+            is_array($paths['exclude'] ?? null) ? $paths['exclude'] : [],
+            SharedStorageSymlink::INTERNAL_PROJECT_EXCLUDE_PATHS,
+        ));
     }
 
     /**
