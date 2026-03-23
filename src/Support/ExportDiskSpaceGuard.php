@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Siteko\FilamentResticBackups\Support;
 
+use Illuminate\Support\Carbon;
 use Siteko\FilamentResticBackups\DTO\ProcessResult;
 use Siteko\FilamentResticBackups\Services\ResticRunner;
 use Throwable;
@@ -11,6 +12,8 @@ use Throwable;
 class ExportDiskSpaceGuard
 {
     private const DEFAULT_TIMEOUT_SECONDS = 600;
+
+    private const QUEUED_PREFLIGHT_TTL_SECONDS = 300;
 
     private const SNAPSHOT_ARCHIVE_RATIO = 0.35;
 
@@ -36,16 +39,17 @@ class ExportDiskSpaceGuard
         string $snapshotId,
         ?string $workPath = null,
         ?int $timeout = null,
+        array $processOptions = [],
     ): array {
         $workPath = $this->resolveWorkPath($workPath);
         $statsMeta = null;
         $restoreSizeBytes = null;
 
         try {
-            $statsResult = $runner->statsRestoreSize($snapshotId, [
+            $statsResult = $runner->statsRestoreSize($snapshotId, array_merge($processOptions, [
                 'timeout' => $timeout ?? self::DEFAULT_TIMEOUT_SECONDS,
                 'capture_output' => true,
-            ]);
+            ]));
             $statsMeta = $this->formatProcessResult($statsResult);
 
             if ($statsResult->exitCode === 0 && is_array($statsResult->parsedJson)) {
@@ -73,17 +77,18 @@ class ExportDiskSpaceGuard
         string $targetSnapshotId,
         ?string $workPath = null,
         ?int $timeout = null,
+        array $processOptions = [],
     ): array {
         $workPath = $this->resolveWorkPath($workPath);
         $diffMeta = null;
         $restoreSizeBytes = null;
 
         try {
-            $diffResult = $runner->diff($baselineSnapshotId, $targetSnapshotId, [
+            $diffResult = $runner->diff($baselineSnapshotId, $targetSnapshotId, array_merge($processOptions, [
                 'json' => true,
                 'timeout' => $timeout ?? self::DEFAULT_TIMEOUT_SECONDS,
                 'capture_output' => true,
-            ]);
+            ]));
             $diffMeta = $this->formatProcessResult($diffResult);
 
             if ($diffResult->exitCode === 0 && is_array($diffResult->parsedJson)) {
@@ -108,6 +113,7 @@ class ExportDiskSpaceGuard
             $targetSnapshotId,
             $workPath,
             $timeout,
+            $processOptions,
         );
 
         $estimate['source'] = ($estimate['restore_size_bytes'] ?? null) !== null ? 'restic_stats_fallback' : null;
@@ -125,6 +131,91 @@ class ExportDiskSpaceGuard
                     'stats' => $estimate['stats'] ?? null,
                 ],
             );
+        }
+
+        return $estimate;
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     * @param  array<string, scalar|null>  $context
+     * @return array<string, mixed>
+     */
+    public function queuePayload(array $estimate, array $context = []): array
+    {
+        return array_merge($context, [
+            'computed_at' => now()->toIso8601String(),
+            'ok' => (bool) ($estimate['ok'] ?? false),
+            'profile' => is_string($estimate['profile'] ?? null) ? $estimate['profile'] : null,
+            'source' => is_string($estimate['source'] ?? null) ? $estimate['source'] : null,
+            'free_bytes' => $this->intFromPayload($estimate['free_bytes'] ?? null),
+            'restore_size_bytes' => $this->intFromPayload($estimate['restore_size_bytes'] ?? null),
+            'estimated_archive_bytes' => $this->intFromPayload($estimate['estimated_archive_bytes'] ?? null),
+            'reserve_bytes' => $this->intFromPayload($estimate['reserve_bytes'] ?? null),
+            'required_bytes' => $this->intFromPayload($estimate['required_bytes'] ?? null),
+            'missing_bytes' => $this->intFromPayload($estimate['missing_bytes'] ?? null),
+            'note' => is_string($estimate['note'] ?? null) ? $estimate['note'] : null,
+            'origin' => 'ui_preflight',
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $payload
+     * @param  array<string, scalar|null>  $expectedContext
+     * @return array<string, mixed>|null
+     */
+    public function hydrateQueuedEstimate(
+        ?array $payload,
+        array $expectedContext,
+        ?string $workPath = null,
+        int $maxAgeSeconds = self::QUEUED_PREFLIGHT_TTL_SECONDS,
+    ): ?array {
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        foreach ($expectedContext as $key => $value) {
+            if (($payload[$key] ?? null) !== $value) {
+                return null;
+            }
+        }
+
+        $computedAt = $payload['computed_at'] ?? null;
+
+        if (! is_string($computedAt) || trim($computedAt) === '') {
+            return null;
+        }
+
+        try {
+            $timestamp = Carbon::parse($computedAt);
+        } catch (Throwable) {
+            return null;
+        }
+
+        if (abs(now()->diffInSeconds($timestamp, false)) > $maxAgeSeconds) {
+            return null;
+        }
+
+        $estimate = [
+            'exit_code' => (bool) ($payload['ok'] ?? false) ? 0 : 1,
+            'ok' => (bool) ($payload['ok'] ?? false),
+            'profile' => is_string($payload['profile'] ?? null) ? $payload['profile'] : null,
+            'source' => is_string($payload['source'] ?? null) ? $payload['source'] : null,
+            'work_path' => $this->resolveWorkPath($workPath),
+            'disk_path' => $this->resolveExistingPath($this->resolveWorkPath($workPath)),
+            'free_bytes' => $this->intFromPayload($payload['free_bytes'] ?? null),
+            'restore_size_bytes' => $this->intFromPayload($payload['restore_size_bytes'] ?? null),
+            'estimated_archive_bytes' => $this->intFromPayload($payload['estimated_archive_bytes'] ?? null),
+            'reserve_bytes' => $this->intFromPayload($payload['reserve_bytes'] ?? null),
+            'required_bytes' => $this->intFromPayload($payload['required_bytes'] ?? null),
+            'missing_bytes' => $this->intFromPayload($payload['missing_bytes'] ?? null),
+            'note' => is_string($payload['note'] ?? null) ? $payload['note'] : null,
+            'origin' => 'ui_preflight',
+            'computed_at' => $timestamp->toIso8601String(),
+        ];
+
+        if (($estimate['required_bytes'] ?? null) === null || ($estimate['free_bytes'] ?? null) === null) {
+            return null;
         }
 
         return $estimate;
@@ -330,6 +421,15 @@ class ExportDiskSpaceGuard
         }
 
         return (int) $free;
+    }
+
+    protected function intFromPayload(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return (int) $value;
     }
 
     /**

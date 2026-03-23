@@ -364,6 +364,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             $keepHours,
                             auth()->id(),
                             'filament',
+                            app(ExportDiskSpaceGuard::class)->queuePayload($estimate, [
+                                'snapshot_id' => $snapshotId,
+                            ]),
                         );
 
                         Notification::make()

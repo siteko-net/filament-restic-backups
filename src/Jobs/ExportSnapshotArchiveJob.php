@@ -54,6 +54,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
         public int $keepHours = 24,
         public ?int $userId = null,
         public string $trigger = 'filament',
+        public ?array $preflightEstimate = null,
     ) {}
 
     public function handle(OperationLock $operationLock, ResticRunner $runner): void
@@ -111,18 +112,34 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $lockHandle->heartbeat(['step' => $step]);
 
             $spaceGuard = app(ExportDiskSpaceGuard::class);
-            $spaceEstimate = $spaceGuard->estimateSnapshot(
-                $runner,
-                $this->snapshotId,
+            $spaceEstimate = $spaceGuard->hydrateQueuedEstimate(
+                $this->preflightEstimate,
+                ['snapshot_id' => $this->snapshotId],
                 $baseDir,
-                min(600, $this->timeout),
             );
+
+            if (! is_array($spaceEstimate)) {
+                $spaceEstimate = $spaceGuard->estimateSnapshot(
+                    $runner,
+                    $this->snapshotId,
+                    $baseDir,
+                    min(600, $this->timeout),
+                    [
+                        'heartbeat' => function (array $context = []) use ($lockHandle, $step): void {
+                            $lockHandle->heartbeat(array_merge(['step' => $step], $context));
+                        },
+                        'heartbeat_every' => 20,
+                    ],
+                );
+            }
+
             $meta['steps'][$step] = $spaceEstimate;
             $meta['export']['disk_space'] = [
                 'free_bytes' => $spaceEstimate['free_bytes'] ?? null,
                 'required_bytes' => $spaceEstimate['required_bytes'] ?? null,
                 'missing_bytes' => $spaceEstimate['missing_bytes'] ?? null,
                 'source' => $spaceEstimate['source'] ?? null,
+                'origin' => $spaceEstimate['origin'] ?? null,
             ];
             $run->update(['meta' => $meta]);
 
@@ -313,6 +330,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
             $this->keepHours,
             $this->userId,
             $this->trigger,
+            $this->preflightEstimate,
         )->delay($delay);
 
         if ($this->queue) {

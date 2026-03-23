@@ -156,6 +156,9 @@ class BackupsExports extends BaseBackupsPage
                                 24,
                                 auth()->id(),
                                 'filament',
+                                app(ExportDiskSpaceGuard::class)->queuePayload($estimate, [
+                                    'snapshot_id' => $snapshotId,
+                                ]),
                             );
 
                             Notification::make()
@@ -214,6 +217,11 @@ class BackupsExports extends BaseBackupsPage
                                 24,
                                 auth()->id(),
                                 'filament',
+                                app(ExportDiskSpaceGuard::class)->queuePayload($estimate, [
+                                    'baseline_snapshot_id' => $this->normalizeScalar($this->baselineSnapshot['id'] ?? null)
+                                        ?? $this->baselineSnapshotId,
+                                    'target_snapshot_id' => $this->latestSnapshotId(),
+                                ]),
                             );
 
                             Notification::make()
