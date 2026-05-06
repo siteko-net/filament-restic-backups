@@ -82,6 +82,8 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
 
     public bool $restorePreflightOk = true;
 
+    public bool $exportPreflightOk = true;
+
     protected static ?string $slug = 'backups/snapshots';
 
     protected static ?string $navigationLabel = 'Snapshots';
@@ -280,8 +282,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     ->visible(fn (array $record): bool => ! $this->isArchiveReady($record))
                     ->disabled(fn (): bool => $this->snapshotError !== null)
                     ->modalSubmitActionLabel(__('restic-backups::backups.pages.snapshots.actions.export.modal_submit_label'))
+                    ->modalSubmitAction(function (Action $action): Action {
+                        return $action->disabled(fn (): bool => ! $this->exportPreflightOk);
+                    })
                     ->schema(function (array $record): array {
                         $estimate = $this->computeSnapshotExportEstimate($record);
+                        $this->exportPreflightOk = ($estimate['ok'] ?? false) === true;
 
                         return [
                             Toggle::make('include_env')
