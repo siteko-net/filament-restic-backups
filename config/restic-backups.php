@@ -26,6 +26,15 @@ return [
         'stale_lock_age_seconds' => env('RESTIC_BACKUPS_STALE_LOCK_AGE_SECONDS', 3600),
     ],
 
+    's3' => [
+        'region' => env('RESTIC_BACKUPS_S3_REGION', 'us-east-1'),
+    ],
+
+    'exports' => [
+        's3_prefix' => env('RESTIC_BACKUPS_EXPORTS_S3_PREFIX'),
+        'multipart_chunk_bytes' => env('RESTIC_BACKUPS_EXPORTS_MULTIPART_CHUNK_BYTES', 8 * 1024 * 1024),
+    ],
+
     'security' => [
         // When empty, any authenticated Filament user can access the pages.
         'permissions' => [],

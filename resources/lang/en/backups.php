@@ -322,6 +322,13 @@ return [
                         'result_fail' => 'Not enough disk space for this export.',
                     ],
                 ],
+                'export_s3' => [
+                    'label' => 'S3 export...',
+                    'modal_heading' => 'Stream snapshot export to S3',
+                    'modal_description' => 'Creates a tar.gz directly in S3 without restoring files to the server disk. A download link will appear in the table once it is ready.',
+                    'modal_submit_label' => 'Start S3 export',
+                    'warning' => 'This mode includes every file in the snapshot, including .env if it exists in the backup. Use it only if you understand the risk.',
+                ],
                 'details' => [
                     'label' => 'Details',
                     'modal_heading' => 'Snapshot details',
@@ -338,6 +345,7 @@ return [
                 ],
                 'kind' => [
                     'full' => 'FULL',
+                    's3_stream' => 'S3 stream',
                 ],
                 'size' => 'Archive size: :size',
                 'size_help' => 'Archive is a compressed tar.gz of a single snapshot. Data size shows uncompressed files, so the archive can be much smaller.',
@@ -375,6 +383,7 @@ return [
                 'restore_ready_body_generic' => 'Restore completed successfully.',
                 'export_queued' => 'Export queued',
                 'export_queued_body' => 'Archive export job queued. Open Runs to download when it finishes.',
+                'export_s3_queued_body' => 'S3 stream export job queued. The link will appear in the table when it finishes.',
                 'export_disk_space_insufficient' => 'Export cancelled before start',
                 'export_disk_space_insufficient_body' => 'Available: :available. Required: :required. Missing: :missing.',
                 'export_disk_space_unknown_body' => 'The export was not started because the required disk space could not be estimated safely.',
@@ -410,6 +419,7 @@ return [
             'operation_types' => [
                 'backup' => 'Create snapshot',
                 'export_snapshot' => 'Export snapshot',
+                'export_snapshot_stream' => 'S3 snapshot export',
                 'export_full' => 'Export FULL',
                 'export_delta' => 'Export DELTA',
                 'forget_snapshot' => 'Delete snapshot',
@@ -422,6 +432,7 @@ return [
                 'restic_diff' => 'Restic diff',
                 'restic_restore' => 'Download from storage',
                 'pack_tar_gz' => 'Pack archive',
+                'stream_restic_dump_upload' => 'Stream upload to S3',
                 'forget_prune' => 'Forget + prune',
                 'preflight' => 'Preflight',
                 'preflight_fs' => 'Filesystem preflight',
@@ -559,6 +570,7 @@ return [
                         'forget_snapshot' => 'Delete snapshot',
                         'restore' => 'Restore',
                         'export_snapshot' => 'Export snapshot',
+                        'export_snapshot_stream' => 'S3 snapshot export',
                         'export_full' => 'Export FULL',
                         'export_delta' => 'Export DELTA',
                     ],

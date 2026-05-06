@@ -7,6 +7,7 @@
         ? (int) $archive['size_bytes']
         : null;
     $archiveKind = is_string($archive['kind'] ?? null) ? strtolower((string) $archive['kind']) : 'snapshot';
+    $archiveStorage = is_string($archive['storage'] ?? null) ? strtolower((string) $archive['storage']) : null;
     $notAvailable = __('restic-backups::backups.pages.snapshots.placeholders.not_available');
 
     $statusMap = [
@@ -52,6 +53,9 @@
     <span class="{{ $class }}">{{ $label }}</span>
     @if ($archiveKind === 'full')
         <span class="rb-text rb-text--muted rb-text--sm">{{ __('restic-backups::backups.pages.snapshots.archive.kind.full') }}</span>
+    @endif
+    @if ($archiveKind === 'snapshot_stream' || $archiveStorage === 's3')
+        <span class="rb-text rb-text--muted rb-text--sm">{{ __('restic-backups::backups.pages.snapshots.archive.kind.s3_stream') }}</span>
     @endif
     @if ($archiveSize !== null)
         <span class="rb-text rb-text--muted rb-text--sm rb-tooltip" title="{{ $archiveSizeHelp }}" aria-label="{{ $archiveSizeHelp }}">

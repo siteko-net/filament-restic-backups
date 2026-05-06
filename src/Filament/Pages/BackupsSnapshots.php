@@ -34,6 +34,7 @@ use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Siteko\FilamentResticBackups\Exceptions\ResticConfigurationException;
 use Siteko\FilamentResticBackups\Jobs\ExportSnapshotArchiveJob;
+use Siteko\FilamentResticBackups\Jobs\ExportSnapshotS3StreamJob;
 use Siteko\FilamentResticBackups\Jobs\ForgetSnapshotJob;
 use Siteko\FilamentResticBackups\Jobs\RunBackupJob;
 use Siteko\FilamentResticBackups\Jobs\RunRestoreJob;
@@ -382,6 +383,60 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                             ->success()
                             ->send();
                     }),
+                Action::make('export_s3_stream')
+                    ->label(__('restic-backups::backups.pages.snapshots.actions.export_s3.label'))
+                    ->icon('heroicon-o-cloud-arrow-up')
+                    ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.export_s3.modal_heading'))
+                    ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.export_s3.modal_description'))
+                    ->visible(fn (array $record): bool => ! $this->isArchiveReady($record))
+                    ->disabled(fn (): bool => $this->snapshotError !== null)
+                    ->modalSubmitActionLabel(__('restic-backups::backups.pages.snapshots.actions.export_s3.modal_submit_label'))
+                    ->schema([
+                        Text::make(__('restic-backups::backups.pages.snapshots.actions.export_s3.warning'))
+                            ->color('danger'),
+                        TextInput::make('keep_hours')
+                            ->label(__('restic-backups::backups.pages.snapshots.actions.export.keep_hours_label'))
+                            ->numeric()
+                            ->minValue(1)
+                            ->maxValue(168)
+                            ->default(24)
+                            ->required(),
+                    ])
+                    ->action(function (array $data, array $record): void {
+                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
+
+                        if ($snapshotId === '') {
+                            Notification::make()
+                                ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing'))
+                                ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing_export'))
+                                ->danger()
+                                ->send();
+
+                            throw new Halt;
+                        }
+
+                        $lockInfo = app(OperationLock::class)->getInfo();
+                        if (is_array($lockInfo)) {
+                            Notification::make()
+                                ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
+                                ->body(__('restic-backups::backups.pages.snapshots.notifications.operation_running').' '.__('restic-backups::backups.pages.snapshots.notifications.export_waits'))
+                                ->warning()
+                                ->send();
+                        }
+
+                        ExportSnapshotS3StreamJob::dispatch(
+                            $snapshotId,
+                            (int) ($data['keep_hours'] ?? 24),
+                            auth()->id(),
+                            'filament',
+                        );
+
+                        Notification::make()
+                            ->title(__('restic-backups::backups.pages.snapshots.notifications.export_queued'))
+                            ->body(__('restic-backups::backups.pages.snapshots.notifications.export_s3_queued_body'))
+                            ->success()
+                            ->send();
+                    }),
                 Action::make('delete')
                     ->iconButton()
                     // ->label(__('restic-backups::backups.pages.snapshots.actions.delete.label'))
@@ -705,7 +760,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         }
 
         $runs = BackupRun::query()
-            ->where('type', 'export_snapshot')
+            ->whereIn('type', ['export_snapshot', 'export_snapshot_stream'])
             ->whereIn('meta->snapshot_id', $snapshotIds)
             ->orderByDesc('id')
             ->get();
@@ -888,6 +943,9 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         $export = is_array($meta['export'] ?? null) ? $meta['export'] : [];
 
         $archivePath = $this->normalizeScalar($export['archive_path'] ?? null);
+        $storage = $this->normalizeScalar($export['storage'] ?? null);
+        $bucket = $this->normalizeScalar($export['bucket'] ?? null);
+        $objectKey = $this->normalizeScalar($export['object_key'] ?? null);
         $archiveName = $this->normalizeScalar($export['archive_name'] ?? null);
         $archiveSize = $this->normalizeScalar($export['archive_size'] ?? null);
         $archiveSize = is_numeric($archiveSize) ? (int) $archiveSize : null;
@@ -901,11 +959,12 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'run_id' => $run->getKey(),
                 'size_bytes' => null,
                 'kind' => $archiveKind,
+                'storage' => $storage,
             ];
         }
 
         if ($status === 'success') {
-            if ($archivePath !== null && $archiveName !== null) {
+            if (($archivePath !== null || ($storage === 's3' && $bucket !== null && $objectKey !== null)) && $archiveName !== null) {
                 if ($expiresAt instanceof CarbonInterface && now()->greaterThan($expiresAt)) {
                     return [
                         'size_bytes' => $archiveSize,
@@ -919,6 +978,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         ),
                         'run_id' => $run->getKey(),
                         'kind' => $archiveKind,
+                        'storage' => $storage,
                     ];
                 }
 
@@ -943,6 +1003,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     'expires_at' => $expiresAt?->toIso8601String(),
                     'run_id' => $run->getKey(),
                     'kind' => $archiveKind,
+                    'storage' => $storage,
                 ];
             }
 
@@ -951,6 +1012,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'status' => 'failed',
                 'run_id' => $run->getKey(),
                 'kind' => $archiveKind,
+                'storage' => $storage,
             ];
         }
 
@@ -960,6 +1022,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'status' => 'failed',
                 'run_id' => $run->getKey(),
                 'kind' => $archiveKind,
+                'storage' => $storage,
             ];
         }
 
@@ -969,6 +1032,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                 'status' => 'queue',
                 'run_id' => $run->getKey(),
                 'kind' => $archiveKind,
+                'storage' => $storage,
             ];
         }
 
@@ -977,6 +1041,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
             'status' => 'queue',
             'run_id' => $run->getKey(),
             'kind' => $archiveKind,
+            'storage' => $storage,
         ];
     }
 
@@ -990,7 +1055,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         if ($kind !== null) {
             $kind = strtolower($kind);
 
-            if (in_array($kind, ['snapshot', 'full', 'delta'], true)) {
+            if (in_array($kind, ['snapshot', 'snapshot_stream', 'full', 'delta'], true)) {
                 return $kind;
             }
         }
@@ -998,6 +1063,7 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
         return match ((string) $run->type) {
             'export_full' => 'full',
             'export_delta' => 'delta',
+            'export_snapshot_stream' => 'snapshot_stream',
             default => 'snapshot',
         };
     }

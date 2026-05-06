@@ -8,6 +8,8 @@ use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Carbon;
 use Siteko\FilamentResticBackups\Models\BackupRun;
+use Siteko\FilamentResticBackups\Models\BackupSetting;
+use Siteko\FilamentResticBackups\Support\S3ExportStorage;
 
 class CleanupExportArchivesCommand extends Command
 {
@@ -23,7 +25,7 @@ class CleanupExportArchivesCommand extends Command
 
         $now = Carbon::now();
 
-        $archivesRemoved = $this->cleanupExpiredArchives($filesystem, $now, $dryRun);
+        $archivesRemoved = $this->cleanupExpiredArchives($filesystem, app(S3ExportStorage::class), $now, $dryRun);
         $workDirsRemoved = $this->cleanupWorkDirs($filesystem, $now->copy()->subHours($hours), $dryRun);
 
         $this->info("Cleanup completed. Removed {$archivesRemoved} archives and {$workDirsRemoved} work directories.");
@@ -31,12 +33,12 @@ class CleanupExportArchivesCommand extends Command
         return self::SUCCESS;
     }
 
-    protected function cleanupExpiredArchives(Filesystem $filesystem, Carbon $now, bool $dryRun): int
+    protected function cleanupExpiredArchives(Filesystem $filesystem, S3ExportStorage $storage, Carbon $now, bool $dryRun): int
     {
         $removed = 0;
 
         $runs = BackupRun::query()
-            ->whereIn('type', ['export_snapshot', 'export_full', 'export_delta'])
+            ->whereIn('type', ['export_snapshot', 'export_full', 'export_delta', 'export_snapshot_stream'])
             ->orderBy('id')
             ->get();
 
@@ -65,6 +67,15 @@ class CleanupExportArchivesCommand extends Command
 
             if ($archivePath !== null && is_file($archivePath)) {
                 $filesystem->delete($archivePath);
+            }
+
+            if (($export['storage'] ?? null) === 's3') {
+                $bucket = $this->normalizeScalar($export['bucket'] ?? null);
+                $key = $this->normalizeScalar($export['object_key'] ?? null);
+
+                if ($bucket !== null && $key !== null) {
+                    $storage->deleteObject($storage->client(BackupSetting::singleton()), $bucket, $key);
+                }
             }
 
             $this->markExportDeleted($run, $meta, $export, $now);
@@ -183,6 +194,8 @@ class CleanupExportArchivesCommand extends Command
             $export['archive_name'],
             $export['archive_size'],
             $export['archive_sha256'],
+            $export['archive_etag'],
+            $export['object_url'],
         );
 
         $meta['export'] = $export;

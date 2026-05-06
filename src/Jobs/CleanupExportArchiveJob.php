@@ -10,6 +10,8 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Siteko\FilamentResticBackups\Models\BackupRun;
+use Siteko\FilamentResticBackups\Models\BackupSetting;
+use Siteko\FilamentResticBackups\Support\S3ExportStorage;
 
 class CleanupExportArchiveJob implements ShouldQueue
 {
@@ -25,11 +27,11 @@ class CleanupExportArchiveJob implements ShouldQueue
     {
     }
 
-    public function handle(): void
+    public function handle(S3ExportStorage $storage): void
     {
         $run = BackupRun::query()->find($this->runId);
 
-        if (! $run instanceof BackupRun || ! in_array($run->type, ['export_snapshot', 'export_full', 'export_delta'], true)) {
+        if (! $run instanceof BackupRun || ! in_array($run->type, ['export_snapshot', 'export_full', 'export_delta', 'export_snapshot_stream'], true)) {
             return;
         }
 
@@ -46,6 +48,15 @@ class CleanupExportArchiveJob implements ShouldQueue
             @unlink($path);
         }
 
+        if (($export['storage'] ?? null) === 's3') {
+            $bucket = (string) ($export['bucket'] ?? '');
+            $key = (string) ($export['object_key'] ?? '');
+
+            if ($bucket !== '' && $key !== '') {
+                $storage->deleteObject($storage->client(BackupSetting::singleton()), $bucket, $key);
+            }
+        }
+
         $export['deleted_at'] = now()->toIso8601String();
         $export['expires_at'] = now()->toIso8601String();
 
@@ -54,6 +65,8 @@ class CleanupExportArchiveJob implements ShouldQueue
             $export['archive_name'],
             $export['archive_size'],
             $export['archive_sha256'],
+            $export['archive_etag'],
+            $export['object_url'],
         );
 
         $meta['export'] = $export;
