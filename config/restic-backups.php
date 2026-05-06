@@ -21,6 +21,9 @@ return [
     'restic' => [
         'binary' => env('RESTIC_BINARY', 'restic'),
         'cache_dir' => storage_path('app/_restic_cache'),
+        'retry_lock' => env('RESTIC_BACKUPS_RETRY_LOCK', '10m'),
+        'auto_unlock_stale' => env('RESTIC_BACKUPS_AUTO_UNLOCK_STALE', false),
+        'stale_lock_age_seconds' => env('RESTIC_BACKUPS_STALE_LOCK_AGE_SECONDS', 3600),
     ],
 
     'security' => [

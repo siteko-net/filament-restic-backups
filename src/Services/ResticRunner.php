@@ -299,6 +299,9 @@ class ResticRunner
 
         $binary = $this->normalizeScalar(config('restic-backups.restic.binary', 'restic')) ?? 'restic';
         $cacheDir = $this->normalizeScalar(config('restic-backups.restic.cache_dir'));
+        $retryLock = $requiresRepository
+            ? $this->normalizeScalar($options['retry_lock'] ?? config('restic-backups.restic.retry_lock'))
+            : null;
         $workDir = $this->normalizeScalar(config('restic-backups.paths.work_dir'));
 
         if ($cacheDir !== null) {
@@ -320,6 +323,11 @@ class ResticRunner
             $command[] = $cacheDir;
         }
 
+        if ($retryLock !== null) {
+            $command[] = '--retry-lock';
+            $command[] = $retryLock;
+        }
+
         foreach ($arguments as $argument) {
             $command[] = $argument;
         }
@@ -331,12 +339,106 @@ class ResticRunner
         $heartbeat = $options['heartbeat'] ?? null;
         $heartbeatEvery = (int) ($options['heartbeat_every'] ?? 20);
 
-        unset($options['heartbeat'], $options['heartbeat_every']);
+        unset($options['heartbeat'], $options['heartbeat_every'], $options['retry_lock']);
 
         if ($expectsJson) {
             $captureOutput = true;
         }
 
+        $secrets = $this->collectSecrets($settings);
+
+        $result = $this->runResticProcess(
+            command: $command,
+            projectRoot: $projectRoot,
+            env: $env,
+            timeout: $timeout,
+            captureOutput: $captureOutput,
+            maxOutputBytes: $maxOutputBytes,
+            expectsJson: $expectsJson,
+            heartbeat: $heartbeat,
+            heartbeatEvery: $heartbeatEvery,
+            secrets: $secrets,
+            repository: $repository,
+        );
+
+        if (
+            $requiresRepository
+            && $this->shouldAutoUnlockStaleRepositoryLock($result)
+        ) {
+            $unlockCommand = [$binary];
+
+            if ($cacheDir !== null) {
+                $unlockCommand[] = '--cache-dir';
+                $unlockCommand[] = $cacheDir;
+            }
+
+            $unlockCommand[] = 'unlock';
+
+            $unlockResult = $this->runResticProcess(
+                command: $unlockCommand,
+                projectRoot: $projectRoot,
+                env: $env,
+                timeout: min((float) ($timeout ?? self::DEFAULT_TIMEOUT_SECONDS), 120.0),
+                captureOutput: true,
+                maxOutputBytes: $maxOutputBytes,
+                expectsJson: false,
+                heartbeat: null,
+                heartbeatEvery: $heartbeatEvery,
+                secrets: $secrets,
+                repository: $repository,
+            );
+
+            if ($unlockResult->exitCode === 0) {
+                $result = $this->runResticProcess(
+                    command: $command,
+                    projectRoot: $projectRoot,
+                    env: $env,
+                    timeout: $timeout,
+                    captureOutput: $captureOutput,
+                    maxOutputBytes: $maxOutputBytes,
+                    expectsJson: $expectsJson,
+                    heartbeat: $heartbeat,
+                    heartbeatEvery: $heartbeatEvery,
+                    secrets: $secrets,
+                    repository: $repository,
+                    stderrPrefix: $this->autoUnlockNote($unlockResult),
+                );
+            } else {
+                $result->stderr = $this->prependOutput(
+                    $result->stderr,
+                    'Auto unlock was skipped: `restic unlock` failed.'
+                        .PHP_EOL
+                        .'Unlock stderr: '.$unlockResult->stderr,
+                );
+            }
+        }
+
+        if ($throwOnError && $result->exitCode !== 0) {
+            throw new ResticProcessException($result);
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  array<int, string>  $command
+     * @param  array<string, string>  $env
+     * @param  array<int, string>  $secrets
+     */
+    protected function runResticProcess(
+        array $command,
+        string $projectRoot,
+        array $env,
+        mixed $timeout,
+        bool $captureOutput,
+        int $maxOutputBytes,
+        bool $expectsJson,
+        mixed $heartbeat,
+        int $heartbeatEvery,
+        array $secrets,
+        ?string $repository,
+        string $stderrPrefix = '',
+    ): ProcessResult {
         $startedAt = new DateTimeImmutable;
         $start = microtime(true);
 
@@ -394,9 +496,12 @@ class ResticRunner
             $stderr = trim($stderr.PHP_EOL.$exceptionMessage);
         }
 
-        $secrets = $this->collectSecrets($settings);
         $stdout = $this->redactOutput($stdout, $secrets, $repository);
         $stderr = $this->redactOutput($stderr, $secrets, $repository);
+
+        if ($stderrPrefix !== '') {
+            $stderr = $this->prependOutput($stderr, $stderrPrefix);
+        }
 
         if ($exitCode !== 0) {
             $stderr = $this->appendDiagnostics($stderr, $repository);
@@ -418,11 +523,166 @@ class ResticRunner
             finishedAt: $finishedAt,
         );
 
-        if ($throwOnError && $result->exitCode !== 0) {
-            throw new ResticProcessException($result);
+        return $result;
+    }
+
+    protected function shouldAutoUnlockStaleRepositoryLock(ProcessResult $result): bool
+    {
+        if (! (bool) config('restic-backups.restic.auto_unlock_stale', false)) {
+            return false;
         }
 
-        return $result;
+        if ($result->exitCode === 0 || ! $this->isRepositoryLockError($result->stderr)) {
+            return false;
+        }
+
+        $lock = $this->parseRepositoryLock($result->stderr);
+
+        if ($lock === []) {
+            return false;
+        }
+
+        $hostname = strtolower((string) ($lock['hostname'] ?? ''));
+
+        if ($hostname === '' || ! in_array($hostname, $this->currentHostnames(), true)) {
+            return false;
+        }
+
+        $pid = (int) ($lock['pid'] ?? 0);
+
+        if ($pid <= 0 || $this->isLocalPidRunning($pid)) {
+            return false;
+        }
+
+        $createdAt = $lock['created_at'] ?? null;
+
+        if (! $createdAt instanceof DateTimeImmutable) {
+            return false;
+        }
+
+        $ageSeconds = time() - $createdAt->getTimestamp();
+        $minimumAge = max(1, (int) config('restic-backups.restic.stale_lock_age_seconds', 3600));
+
+        if ($ageSeconds < $minimumAge) {
+            return false;
+        }
+
+        return ! $this->localResticProcessesRunning();
+    }
+
+    protected function isRepositoryLockError(string $stderr): bool
+    {
+        $message = strtolower($stderr);
+
+        return str_contains($message, 'repository is already locked')
+            || str_contains($message, 'already locked exclusively')
+            || str_contains($message, 'unable to create lock in backend')
+            || str_contains($message, 'lock was created at');
+    }
+
+    /**
+     * @return array{pid?: int, hostname?: string, created_at?: DateTimeImmutable}
+     */
+    protected function parseRepositoryLock(string $stderr): array
+    {
+        $lock = [];
+
+        if (preg_match('/repository is already locked by PID\s+(\d+)\s+on\s+(\S+)/i', $stderr, $matches) === 1) {
+            $lock['pid'] = (int) $matches[1];
+            $lock['hostname'] = strtolower($matches[2]);
+        }
+
+        if (preg_match('/lock was created at\s+([^\r\n(]+)/i', $stderr, $matches) === 1) {
+            try {
+                $lock['created_at'] = new DateTimeImmutable(trim($matches[1]));
+            } catch (Throwable) {
+                // Keep the lock untrusted if the timestamp format is unexpected.
+            }
+        }
+
+        return $lock;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function currentHostnames(): array
+    {
+        $hosts = [
+            gethostname(),
+            php_uname('n'),
+        ];
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn (mixed $host): ?string => is_string($host) && trim($host) !== ''
+                ? strtolower(trim($host))
+                : null,
+            $hosts,
+        ))));
+    }
+
+    protected function isLocalPidRunning(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+
+        try {
+            $process = new Process(['ps', '-p', (string) $pid, '-o', 'pid=']);
+            $process->setTimeout(5);
+            $process->run();
+
+            return trim($process->getOutput()) !== '';
+        } catch (Throwable) {
+            return true;
+        }
+    }
+
+    protected function localResticProcessesRunning(): bool
+    {
+        try {
+            $process = new Process(['pgrep', '-x', 'restic']);
+            $process->setTimeout(5);
+            $process->run();
+
+            if ($process->getExitCode() === 1) {
+                return false;
+            }
+
+            return trim($process->getOutput()) !== '';
+        } catch (Throwable) {
+            return true;
+        }
+    }
+
+    protected function autoUnlockNote(ProcessResult $unlockResult): string
+    {
+        $parts = ['Auto unlock removed a stale restic repository lock; command was retried once.'];
+
+        if (trim($unlockResult->stdout) !== '') {
+            $parts[] = 'Unlock stdout: '.trim($unlockResult->stdout);
+        }
+
+        if (trim($unlockResult->stderr) !== '') {
+            $parts[] = 'Unlock stderr: '.trim($unlockResult->stderr);
+        }
+
+        return implode(PHP_EOL, $parts);
+    }
+
+    protected function prependOutput(string $output, string $prefix): string
+    {
+        $prefix = trim($prefix);
+
+        if ($prefix === '') {
+            return $output;
+        }
+
+        if ($output === '') {
+            return $prefix;
+        }
+
+        return $prefix.PHP_EOL.PHP_EOL.ltrim($output);
     }
 
     /**
@@ -736,6 +996,11 @@ class ResticRunner
             $diagnostics[] = $repositoryHint;
         }
 
+        $lockHint = $this->repositoryLockDiagnostic($stderr);
+        if ($lockHint !== null) {
+            $diagnostics[] = $lockHint;
+        }
+
         if ($diagnostics === []) {
             return $stderr;
         }
@@ -793,6 +1058,24 @@ class ResticRunner
         }
 
         return null;
+    }
+
+    protected function repositoryLockDiagnostic(string $stderr): ?string
+    {
+        if (! $this->isRepositoryLockError($stderr)) {
+            return null;
+        }
+
+        $retryLock = $this->normalizeScalar(config('restic-backups.restic.retry_lock')) ?? 'disabled';
+        $hint = "Restic repository is locked. The command waits according to retry_lock [{$retryLock}].";
+
+        if ((bool) config('restic-backups.restic.auto_unlock_stale', false)) {
+            $hint .= ' Stale auto-unlock is enabled and will only run for old local locks with a dead PID and no local restic process.';
+        } else {
+            $hint .= ' If this is stale, inspect restic locks and run `restic unlock` manually, or enable RESTIC_BACKUPS_AUTO_UNLOCK_STALE for single-server deployments.';
+        }
+
+        return $hint;
     }
 
     /**
