@@ -288,21 +288,29 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                     })
                     ->schema(function (array $record): array {
                         $estimate = $this->computeSnapshotExportEstimate($record);
-                        $this->exportPreflightOk = ($estimate['ok'] ?? false) === true;
+                        $mode = $this->resolveSnapshotExportMode();
+                        $usesS3Stream = $this->shouldUseS3StreamExport($mode, $estimate);
+                        $this->exportPreflightOk = $this->snapshotExportCanSubmit($mode, $estimate);
 
-                        return [
-                            Toggle::make('include_env')
+                        $schema = [];
+
+                        if (! $usesS3Stream) {
+                            $schema[] = Toggle::make('include_env')
                                 ->label(__('restic-backups::backups.pages.snapshots.actions.export.include_env_label'))
                                 ->helperText(__('restic-backups::backups.pages.snapshots.actions.export.include_env_help'))
-                                ->default(false),
-                            TextInput::make('keep_hours')
-                                ->label(__('restic-backups::backups.pages.snapshots.actions.export.keep_hours_label'))
-                                ->numeric()
-                                ->minValue(1)
-                                ->maxValue(168)
-                                ->default(24)
-                                ->required(),
-                            Section::make(__('restic-backups::backups.pages.snapshots.actions.export.preflight.title'))
+                                ->default(false);
+                        }
+
+                        $schema[] = TextInput::make('keep_hours')
+                            ->label(__('restic-backups::backups.pages.snapshots.actions.export.keep_hours_label'))
+                            ->numeric()
+                            ->minValue(1)
+                            ->maxValue(168)
+                            ->default(24)
+                            ->required();
+
+                        if ($mode !== 's3_stream') {
+                            $schema[] = Section::make(__('restic-backups::backups.pages.snapshots.actions.export.preflight.title'))
                                 ->schema([
                                     Text::make(fn (): string => __('restic-backups::backups.pages.snapshots.actions.export.preflight.available', [
                                         'bytes' => $this->formatBytes($estimate['free_bytes'] ?? null),
@@ -322,10 +330,13 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                     Text::make(fn (): string => $this->exportEstimateStatusMessage(
                                         $estimate,
                                         'restic-backups::backups.pages.snapshots.actions.export.preflight',
+                                        $mode,
                                     ))
-                                        ->color(($estimate['ok'] ?? false) === true ? 'success' : 'danger'),
-                                ]),
-                        ];
+                                        ->color($this->exportEstimateStatusColor($estimate, $mode)),
+                                ]);
+                        }
+
+                        return $schema;
                     })
                     ->action(function (array $data, array $record): void {
                         $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
@@ -343,8 +354,10 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                         $includeEnv = (bool) ($data['include_env'] ?? false);
                         $keepHours = (int) ($data['keep_hours'] ?? 24);
                         $estimate = $this->computeSnapshotExportEstimate($record);
+                        $mode = $this->resolveSnapshotExportMode();
+                        $usesS3Stream = $this->shouldUseS3StreamExport($mode, $estimate);
 
-                        if (($estimate['ok'] ?? false) !== true) {
+                        if (! $this->snapshotExportCanSubmit($mode, $estimate)) {
                             Notification::make()
                                 ->title(__('restic-backups::backups.pages.snapshots.notifications.export_disk_space_insufficient'))
                                 ->body($this->formatExportEstimateNotificationBody(
@@ -366,74 +379,29 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
                                 ->send();
                         }
 
-                        ExportSnapshotArchiveJob::dispatch(
-                            $snapshotId,
-                            $includeEnv,
-                            $keepHours,
-                            auth()->id(),
-                            'filament',
-                            app(ExportDiskSpaceGuard::class)->queuePayload($estimate, [
-                                'snapshot_id' => $snapshotId,
-                            ]),
-                        );
+                        if ($usesS3Stream) {
+                            ExportSnapshotS3StreamJob::dispatch(
+                                $snapshotId,
+                                $keepHours,
+                                auth()->id(),
+                                'filament',
+                            );
+                        } else {
+                            ExportSnapshotArchiveJob::dispatch(
+                                $snapshotId,
+                                $includeEnv,
+                                $keepHours,
+                                auth()->id(),
+                                'filament',
+                                app(ExportDiskSpaceGuard::class)->queuePayload($estimate, [
+                                    'snapshot_id' => $snapshotId,
+                                ]),
+                            );
+                        }
 
                         Notification::make()
                             ->title(__('restic-backups::backups.pages.snapshots.notifications.export_queued'))
                             ->body(__('restic-backups::backups.pages.snapshots.notifications.export_queued_body'))
-                            ->success()
-                            ->send();
-                    }),
-                Action::make('export_s3_stream')
-                    ->label(__('restic-backups::backups.pages.snapshots.actions.export_s3.label'))
-                    ->icon('heroicon-o-cloud-arrow-up')
-                    ->modalHeading(__('restic-backups::backups.pages.snapshots.actions.export_s3.modal_heading'))
-                    ->modalDescription(__('restic-backups::backups.pages.snapshots.actions.export_s3.modal_description'))
-                    ->visible(fn (array $record): bool => ! $this->isArchiveReady($record))
-                    ->disabled(fn (): bool => $this->snapshotError !== null)
-                    ->modalSubmitActionLabel(__('restic-backups::backups.pages.snapshots.actions.export_s3.modal_submit_label'))
-                    ->schema([
-                        Text::make(__('restic-backups::backups.pages.snapshots.actions.export_s3.warning'))
-                            ->color('danger'),
-                        TextInput::make('keep_hours')
-                            ->label(__('restic-backups::backups.pages.snapshots.actions.export.keep_hours_label'))
-                            ->numeric()
-                            ->minValue(1)
-                            ->maxValue(168)
-                            ->default(24)
-                            ->required(),
-                    ])
-                    ->action(function (array $data, array $record): void {
-                        $snapshotId = (string) ($record['id'] ?? $record['short_id'] ?? '');
-
-                        if ($snapshotId === '') {
-                            Notification::make()
-                                ->title(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing'))
-                                ->body(__('restic-backups::backups.pages.snapshots.notifications.snapshot_id_missing_export'))
-                                ->danger()
-                                ->send();
-
-                            throw new Halt;
-                        }
-
-                        $lockInfo = app(OperationLock::class)->getInfo();
-                        if (is_array($lockInfo)) {
-                            Notification::make()
-                                ->title(__('restic-backups::backups.pages.snapshots.notifications.operation_in_progress'))
-                                ->body(__('restic-backups::backups.pages.snapshots.notifications.operation_running').' '.__('restic-backups::backups.pages.snapshots.notifications.export_waits'))
-                                ->warning()
-                                ->send();
-                        }
-
-                        ExportSnapshotS3StreamJob::dispatch(
-                            $snapshotId,
-                            (int) ($data['keep_hours'] ?? 24),
-                            auth()->id(),
-                            'filament',
-                        );
-
-                        Notification::make()
-                            ->title(__('restic-backups::backups.pages.snapshots.notifications.export_queued'))
-                            ->body(__('restic-backups::backups.pages.snapshots.notifications.export_s3_queued_body'))
                             ->success()
                             ->send();
                     }),
@@ -1731,15 +1699,62 @@ class BackupsSnapshots extends BaseBackupsPage implements HasTable
     /**
      * @param  array<string, mixed>  $estimate
      */
-    protected function exportEstimateStatusMessage(array $estimate, string $prefix): string
+    protected function exportEstimateStatusMessage(array $estimate, string $prefix, string $mode = 'local'): string
     {
         if (($estimate['required_bytes'] ?? null) === null) {
-            return __($prefix.'.estimate_unavailable');
+            return $mode === 'auto'
+                ? __($prefix.'.result_fallback_unknown')
+                : __($prefix.'.estimate_unavailable');
+        }
+
+        if ($mode === 'auto' && ($estimate['ok'] ?? false) !== true) {
+            return __($prefix.'.result_fallback');
         }
 
         return ($estimate['ok'] ?? false) === true
             ? __($prefix.'.result_ok')
             : __($prefix.'.result_fail');
+    }
+
+    protected function exportEstimateStatusColor(array $estimate, string $mode): string
+    {
+        if (($estimate['ok'] ?? false) === true) {
+            return 'success';
+        }
+
+        return $mode === 'auto' ? 'warning' : 'danger';
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     */
+    protected function snapshotExportCanSubmit(string $mode, array $estimate): bool
+    {
+        if ($mode !== 'local') {
+            return true;
+        }
+
+        return ($estimate['ok'] ?? false) === true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $estimate
+     */
+    protected function shouldUseS3StreamExport(string $mode, array $estimate): bool
+    {
+        if ($mode === 's3_stream') {
+            return true;
+        }
+
+        return $mode === 'auto' && ($estimate['ok'] ?? false) !== true;
+    }
+
+    protected function resolveSnapshotExportMode(): string
+    {
+        $settings = BackupSetting::singleton();
+        $mode = strtolower(trim((string) ($this->normalizeScalar($settings->snapshot_export_mode) ?? config('restic-backups.exports.snapshot_mode', 'auto'))));
+
+        return in_array($mode, ['auto', 'local', 's3_stream'], true) ? $mode : 'auto';
     }
 
     protected function exportEstimateSourceLabel(mixed $source): string

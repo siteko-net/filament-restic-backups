@@ -31,6 +31,7 @@ return [
     ],
 
     'exports' => [
+        'snapshot_mode' => env('RESTIC_BACKUPS_SNAPSHOT_EXPORT_MODE', 'auto'),
         's3_prefix' => env('RESTIC_BACKUPS_EXPORTS_S3_PREFIX'),
         'multipart_chunk_bytes' => env('RESTIC_BACKUPS_EXPORTS_MULTIPART_CHUNK_BYTES', 8 * 1024 * 1024),
     ],

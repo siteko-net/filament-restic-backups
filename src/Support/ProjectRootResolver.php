@@ -26,6 +26,16 @@ class ProjectRootResolver
         return self::stabilizeDeployPath($fallbackRoot) ?? $fallbackRoot;
     }
 
+    public static function backupSource(mixed $configuredRoot): string
+    {
+        $path = self::configuredOrCurrent($configuredRoot);
+        $realPath = realpath($path);
+
+        return is_string($realPath) && $realPath !== ''
+            ? rtrim($realPath, DIRECTORY_SEPARATOR)
+            : $path;
+    }
+
     protected static function stabilizeDeployPath(string $path): ?string
     {
         $path = rtrim($path, DIRECTORY_SEPARATOR);

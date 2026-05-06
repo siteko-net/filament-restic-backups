@@ -310,7 +310,7 @@ class RunBackupJob implements ShouldQueue
 
     protected function resolveProjectRoot(BackupSetting $settings): string
     {
-        return ProjectRootResolver::configuredOrCurrent($settings->project_root);
+        return ProjectRootResolver::backupSource($settings->project_root);
     }
 
     /**

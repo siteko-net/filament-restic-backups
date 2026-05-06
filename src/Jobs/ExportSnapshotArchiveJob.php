@@ -205,6 +205,10 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
             $restoredProjectPath = $this->resolveRestoredProjectPath($restoreDir, $projectRoot);
 
+            if (is_link($restoredProjectPath)) {
+                throw new \RuntimeException('Restored project path is a symlink; create a new backup with the resolved release path before exporting.');
+            }
+
             if (! is_dir($restoredProjectPath)) {
                 throw new \RuntimeException('Restored project path was not found in the snapshot.');
             }
@@ -356,7 +360,7 @@ class ExportSnapshotArchiveJob implements ShouldQueue
 
     protected function resolveProjectRoot(BackupSetting $settings): string
     {
-        return ProjectRootResolver::configuredOrCurrent($settings->project_root);
+        return ProjectRootResolver::backupSource($settings->project_root);
     }
 
     protected function resolveRestoredProjectPath(string $restoreDir, string $projectRoot): string

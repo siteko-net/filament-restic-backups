@@ -21,6 +21,7 @@ return new class extends Migration
             $table->json('retention')->nullable();
             $table->json('schedule')->nullable();
             $table->json('paths')->nullable();
+            $table->string('snapshot_export_mode')->default('auto');
             $table->string('project_root')->nullable();
             $table->timestamps();
         });

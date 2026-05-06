@@ -146,6 +146,7 @@ class BackupsSettings extends BaseBackupsPage
         $data['retention'] = is_array($data['retention'] ?? null) ? $data['retention'] : [];
         $data['schedule'] = is_array($data['schedule'] ?? null) ? $data['schedule'] : [];
         $data['paths'] = $this->normalizePathsConfig(is_array($data['paths'] ?? null) ? $data['paths'] : []);
+        $data['snapshot_export_mode'] = $this->normalizeSnapshotExportMode($data['snapshot_export_mode'] ?? null);
         $data['schedule']['daily_time'] = BackupsScheduleTime::normalize($data['schedule']['daily_time'] ?? null);
 
         return $data;
@@ -187,6 +188,8 @@ class BackupsSettings extends BaseBackupsPage
         if (isset($data['paths']) && is_array($data['paths'])) {
             $data['paths'] = $this->normalizePathsConfig($data['paths']);
         }
+
+        $data['snapshot_export_mode'] = $this->normalizeSnapshotExportMode($data['snapshot_export_mode'] ?? null);
 
         if (isset($data['schedule']) && is_array($data['schedule'])) {
             $data['schedule']['daily_time'] = BackupsScheduleTime::normalize($data['schedule']['daily_time'] ?? null);
@@ -371,6 +374,21 @@ class BackupsSettings extends BaseBackupsPage
                             ->afterStateHydrated(function (TextInput $component): void {
                                 $component->state(null);
                             }),
+                    ]),
+                Section::make(__('restic-backups::backups.pages.settings.sections.snapshot_export.title'))
+                    ->description(__('restic-backups::backups.pages.settings.sections.snapshot_export.description'))
+                    ->columns(1)
+                    ->schema([
+                        Select::make('snapshot_export_mode')
+                            ->label(__('restic-backups::backups.pages.settings.sections.snapshot_export.mode_label'))
+                            ->options([
+                                'auto' => __('restic-backups::backups.pages.settings.sections.snapshot_export.mode_options.auto'),
+                                'local' => __('restic-backups::backups.pages.settings.sections.snapshot_export.mode_options.local'),
+                                's3_stream' => __('restic-backups::backups.pages.settings.sections.snapshot_export.mode_options.s3_stream'),
+                            ])
+                            ->default('auto')
+                            ->required()
+                            ->helperText(__('restic-backups::backups.pages.settings.sections.snapshot_export.mode_helper')),
                     ]),
                 Section::make(__('restic-backups::backups.pages.settings.sections.retention.title'))
                     ->description(__('restic-backups::backups.pages.settings.sections.retention.description'))
@@ -996,6 +1014,13 @@ class BackupsSettings extends BaseBackupsPage
         $paths['exclude'] = $this->normalizePathList($paths['exclude'] ?? []);
 
         return $paths;
+    }
+
+    protected function normalizeSnapshotExportMode(mixed $value): string
+    {
+        $value = strtolower(trim((string) ($this->normalizeScalar($value) ?? config('restic-backups.exports.snapshot_mode', 'auto'))));
+
+        return in_array($value, ['auto', 'local', 's3_stream'], true) ? $value : 'auto';
     }
 
     /**

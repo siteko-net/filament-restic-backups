@@ -79,6 +79,17 @@ return [
                     'password_label' => 'Repository password',
                     'password_helper' => 'Required on first setup. Store it safely.',
                 ],
+                'snapshot_export' => [
+                    'title' => 'Snapshot downloads',
+                    'description' => 'Configures how the Download action prepares an archive.',
+                    'mode_label' => 'Export scenario',
+                    'mode_helper' => 'Automatic mode uses a local archive when disk space is sufficient; otherwise it prepares the archive through S3.',
+                    'mode_options' => [
+                        'auto' => 'Automatic by free disk space',
+                        'local' => 'Local archive on server only',
+                        's3_stream' => 'Streamed S3 archive only',
+                    ],
+                ],
                 'retention' => [
                     'title' => 'Retention policy',
                     'description' => 'If empty or 0, retention may be skipped.',
@@ -305,7 +316,7 @@ return [
                 'export' => [
                     'label' => 'Download archive...',
                     'modal_heading' => 'Download snapshot as archive',
-                    'modal_description' => 'Creates an archive on the server (restic restore + tar.gz). A download link will appear in the table once it is ready.',
+                    'modal_description' => 'Prepares a snapshot archive. A download link will appear in the table once it is ready.',
                     'modal_submit_label' => 'Start archive export',
                     'include_env_label' => 'Include .env (unsafe)',
                     'include_env_help' => 'Disabled by default for security. Enable only if you really need it.',
@@ -320,14 +331,9 @@ return [
                         'estimate_unavailable' => 'The required disk space could not be estimated safely.',
                         'result_ok' => 'Enough disk space for this export.',
                         'result_fail' => 'Not enough disk space for this export.',
+                        'result_fallback' => 'There is not enough free space for a local archive. Export will run through storage.',
+                        'result_fallback_unknown' => 'Could not safely estimate disk space. Export will run through storage.',
                     ],
-                ],
-                'export_s3' => [
-                    'label' => 'S3 export...',
-                    'modal_heading' => 'Stream snapshot export to S3',
-                    'modal_description' => 'Creates a tar.gz directly in S3 without restoring files to the server disk. A download link will appear in the table once it is ready.',
-                    'modal_submit_label' => 'Start S3 export',
-                    'warning' => 'This mode includes every file in the snapshot, including .env if it exists in the backup. Use it only if you understand the risk.',
                 ],
                 'details' => [
                     'label' => 'Details',
@@ -345,7 +351,6 @@ return [
                 ],
                 'kind' => [
                     'full' => 'FULL',
-                    's3_stream' => 'S3 stream',
                 ],
                 'size' => 'Archive size: :size',
                 'size_help' => 'Archive is a compressed tar.gz of a single snapshot. Data size shows uncompressed files, so the archive can be much smaller.',
@@ -383,7 +388,6 @@ return [
                 'restore_ready_body_generic' => 'Restore completed successfully.',
                 'export_queued' => 'Export queued',
                 'export_queued_body' => 'Archive export job queued. Open Runs to download when it finishes.',
-                'export_s3_queued_body' => 'S3 stream export job queued. The link will appear in the table when it finishes.',
                 'export_disk_space_insufficient' => 'Export cancelled before start',
                 'export_disk_space_insufficient_body' => 'Available: :available. Required: :required. Missing: :missing.',
                 'export_disk_space_unknown_body' => 'The export was not started because the required disk space could not be estimated safely.',
